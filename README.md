@@ -1,0 +1,2 @@
+# CoreFred
+Langgraph Project System 
