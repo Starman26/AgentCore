@@ -1,0 +1,4 @@
+created_at,robot_type,problem_title,problem_description,solution_description,author
+2024-10-10,ABB IRB 120,Motor not responding,The main servo motor of the robot arm does not respond when executing movement commands.,Check power supply connections and verify that the safety relay is properly engaged.,Engineer A
+2024-11-05,KUKA KR 6,Overheating issue,The robot controller shows an overheating warning after 20 minutes of operation.,Inspect cooling fans and ensure proper ventilation in the control cabinet.,Engineer B
+2025-01-15,Fanuc M-10iA,Position deviation error,Robot reports positional deviation greater than 0.5mm during calibration routine.,Perform mechanical recalibration and verify encoder alignment.,Engineer C

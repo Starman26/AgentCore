@@ -1,0 +1,10 @@
+langchain
+langgraph
+langgraph-cli[inmem]
+langchain-core
+langchain-openai
+openai
+typing-extensions
+python-dotenv
+pandas
+chromadb
