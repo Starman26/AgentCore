@@ -1,162 +1,123 @@
 from typing_extensions import TypedDict
 from typing import Annotated, Literal
-from langgraph.types import Runnable
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph.message import AnyMessage, add_messages
 from pydantic.v1 import BaseModel, Field
 from langchain_core.tools import tool
-from rag.rag_logic import create_or_update_vectorstore
 from langgraph.prebuilt import tools_condition, ToolNode
+from dotenv import load_dotenv; load_dotenv()
+import os
 
-# -------------------------
-# Estado base con tipo estricto de intención
-# -------------------------
-IntentType = Literal["EDUCATION", "LAB", "INDUSTRIAL", "NOT_IDENTIFIED"]
+from Settings.prompts import intent_prompt, general_prompt, education_prompt, lab_prompt, industrial_prompt
+from Settings.tools import retrieve_context,get_student_profile, update_student_goals, update_learning_style, route_to
+from Settings.state import State, SupervisorOutput 
 
-class State(TypedDict):
-    messages: Annotated[list[AnyMessage], add_messages]
-    next_node: IntentType  # Tipo estricto para intención
+GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, route_to]
+LAB_TOOLS     = [retrieve_context, route_to]
+EDU_TOOLS       = [get_student_profile, update_learning_style, route_to]
 
-class SupervisorOutput(BaseModel):
-    next_node: IntentType
+# ---------- LLM base ----------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise RuntimeError("Falta OPENAI_API_KEY en .env")
 
+llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY, temperature=0, request_timeout=30)
 
-# -------------------------
-# LLM base
-# -------------------------
-llm = ChatOpenAI(model="gpt-4o-mini")
+# Clasificador con salida estructurada
+intent_llm = llm
+llm_runnable = intent_prompt | intent_llm
 
-# -------------------------
-# Prompts de clasificación
-# -------------------------
-intent_prompt_template = ChatPromptTemplate.from_messages([
-    {"role": "system", "content": (
-         "You are a user intent classifier. "
-        "There are 3 categories:\n"
-        "1. EDUCATION: The user wants to learn something new or follow an educational roadmap related to PLC or industrial topics.\n"
-        "2. LAB: The user wants to identify existing lab errors or add new ones.\n"
-        "3. INDUSTRIAL: The user is seeking general knowledge or has a question about PLCs and industrial machines.\n"
-        "If the message does not match any of these categories, respond with 'NOT_IDENTIFIED'.\n"
-        "Return only the corresponding category name."
-    )},
-    {"role": "user", "content": "{messages}"}
-])
-llm_runnable: Runnable = intent_prompt_template | llm.with_structured_output(SupervisorOutput)
-
-# -------------------------
-# Nodo de clasificación
-# -------------------------
 def classify_intent_node(state: State):
-    state = {**state}
-    result = llm_runnable.invoke(state)
-    return {
-        "next_node": result.next_node
-    }
+    label = llm_runnable.invoke({"messages": state["messages"]}).content.strip().upper()
+    label = {"EDUCATION","LAB","INDUSTRIAL","GENERAL"} & {label} and label or "GENERAL"
+    return {"next_node": label}
 
-# -------------------------
-# Prompts de los agentes
-# -------------------------
-education_prompt = ChatPromptTemplate.from_messages([
-    {"role": "system", "content": (
-        "Eres un asistente educativo. Genera un texto claro, didáctico y estructurado para que el usuario aprenda algo nuevo "
-        "sobre PLC o temas industriales. Sé breve pero completo."
-    )},
-    {"role": "user", "content": "{messages}"}
-])
+# ---------- Runnables por agente ----------
+general_llm      = llm.bind_tools(GENERAL_TOOLS)
+education_llm    = llm.bind_tools(EDU_TOOLS)     # para leer/actualizar perfil
+lab_llm          = llm.bind_tools(LAB_TOOLS)
+industrial_llm   = llm                           # sin tools por ahora
 
+general_runnable     = general_prompt   | general_llm
+education_runnable   = education_prompt | education_llm
+lab_runnable         = lab_prompt       | lab_llm
+industrial_runnable  = industrial_prompt| industrial_llm
 
-education_runnable: Runnable = education_prompt | llm
+def general_agent_node(state: State):     return {"messages": general_runnable.invoke({"messages": state["messages"]})}
+def education_agent_node(state: State):   return {"messages": education_runnable.invoke({"messages": state["messages"]})}
+def lab_agent_node(state: State):         return {"messages": lab_runnable.invoke({"messages": state["messages"]})}
+def industrial_agent_node(state: State):  return {"messages": industrial_runnable.invoke({"messages": state["messages"]})}
+def router_from_general(state: State):
+    msg = state["messages"][-1].content
+    route = msg.split("::",1)[1] if isinstance(msg,str) and msg.startswith("ROUTE::") else None
+    return {"route_request": route}
 
-@tool
-def retrieve_context(query: str):
-    """Search for relevant robot problem records from persistent or auto-created vector DB."""
-    vectorstore = create_or_update_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
-    results = retriever.invoke(query)
-    
-    # Construir respuesta legible
-    response = []
-    for doc in results:
-        meta = doc.metadata
-        response.append(
-            f"📅 {meta['created_at']} | 🤖 {meta['robot_type']} | 🧠 {meta['problem_title']} | 👷 {meta['author']}\n"
-            f"{doc.page_content}\n"
-        )
-    
-    return "\n".join(response)
+def router_from_education(state: State):
+    msg = state["messages"][-1].content
+    route = msg.split("::",1)[1] if isinstance(msg,str) and msg.startswith("ROUTE::") else None
+    return {"route_request": route}
 
-lab_prompt = ChatPromptTemplate.from_messages([
-    {"role": "system", "content": (
-        "Eres un asistente de laboratorio. Ayuda a identificar errores o sugiere nuevos errores de manera segura. "
-        "Explica las posibles soluciones y causas de manera clara."
-    )},
-    {"role": "user", "content": "{messages}"}
-])
-tools = [retrieve_context]
-llm_with_tools = llm.bind_tools(tools)
-lab_runnable: Runnable = lab_prompt | llm_with_tools
+def router_from_lab(state: State):
+    msg = state["messages"][-1].content
+    route = msg.split("::",1)[1] if isinstance(msg,str) and msg.startswith("ROUTE::") else None
+    return {"route_request": route}
 
-industrial_prompt = ChatPromptTemplate.from_messages([
-    {"role": "system", "content": (
-        "Eres un asistente de conocimiento industrial. Proporciona información clara y precisa sobre PLC, máquinas o procesos industriales. "
-        "Responde de manera general y profesional."
-    )},
-    {"role": "user", "content": "{messages}"}
-])
-industrial_runnable: Runnable = industrial_prompt | llm
-
-# -------------------------
-# Nodos de los agentes
-# -------------------------
-def education_agent_node(state: State):
-    state = {**state}
-
-    response = education_runnable.invoke(state)
-    
-    return {"messages": response}
-
-def lab_agent_node(state: State):
-    state = {**state}
-
-    response = lab_runnable.invoke(state)
-    
-    return {"messages": response}
-
-def industrial_agent_node(state: State):
-    state = {**state}
-
-    response = industrial_runnable.invoke(state)
-  
-    return {"messages": response}
-
-# -------------------------
-# Grafo completo
-# -------------------------
 graph = StateGraph(State)
 
 graph.add_node("classify_intent_node", classify_intent_node)
-graph.add_node("education_agent_node", education_agent_node)
-graph.add_node("lab_agent_node", lab_agent_node)
-graph.add_node("industrial_agent_node", industrial_agent_node)
-graph.add_node("tools", ToolNode(tools))
+graph.add_node("general_agent_node",     general_agent_node)
+graph.add_node("education_agent_node",   education_agent_node)
+graph.add_node("lab_agent_node",         lab_agent_node)
+graph.add_node("industrial_agent_node",  industrial_agent_node)
+graph.add_node("router_general",   router_from_general)
+graph.add_node("router_education", router_from_education)
+graph.add_node("router_lab",       router_from_lab)
+
+# ToolNodes por agente (limpio y seguro)
+graph.add_node("general_tools",   ToolNode(GENERAL_TOOLS))
+graph.add_node("education_tools", ToolNode(EDU_TOOLS))
+graph.add_node("lab_tools",       ToolNode(LAB_TOOLS))
 
 graph.set_entry_point("classify_intent_node")
+
+# Invocación de tools por agente
+graph.add_conditional_edges("general_agent_node",   tools_condition, {"tools": "general_tools",   "__end__": END})
+graph.add_conditional_edges("education_agent_node", tools_condition, {"tools": "education_tools", "__end__": END})
+graph.add_conditional_edges("lab_agent_node",       tools_condition, {"tools": "lab_tools",       "__end__": END})
+graph.add_conditional_edges("industrial_agent_node", tools_condition, {"__end__": END})  # sin tools
+
+# ToolNodes -> routers (un solo camino)
+graph.add_edge("general_tools",   "router_general")
+graph.add_edge("education_tools", "router_education")
+graph.add_edge("lab_tools",       "router_lab")
+
+# Routers deciden destino o regresan a su agente si no hubo route_to
 graph.add_conditional_edges(
-    "lab_agent_node",
-    tools_condition,
+    "router_general",
+    lambda s: s.get("route_request") or "__back__",
+    {"GENERAL":"general_agent_node","EDUCATION":"education_agent_node","LAB":"lab_agent_node",
+     "INDUSTRIAL":"industrial_agent_node","__back__":"general_agent_node"}
+)
+graph.add_conditional_edges(
+    "router_education",
+    lambda s: s.get("route_request") or "__back__",
+    {"GENERAL":"general_agent_node","EDUCATION":"education_agent_node","LAB":"lab_agent_node",
+     "INDUSTRIAL":"industrial_agent_node","__back__":"education_agent_node"}
+)
+graph.add_conditional_edges(
+    "router_lab",
+    lambda s: s.get("route_request") or "__back__",
+    {"GENERAL":"general_agent_node","EDUCATION":"education_agent_node","LAB":"lab_agent_node",
+     "INDUSTRIAL":"industrial_agent_node","__back__":"lab_agent_node"}
 )
 
-graph.add_edge("tools", "lab_agent_node")
 
+# Clasificador (tal cual lo tienes)
 graph.add_conditional_edges(
     "classify_intent_node",
-    lambda state: state["next_node"],
-    {
-        "EDUCATION": "education_agent_node",
-        "LAB": "lab_agent_node",
-        "INDUSTRIAL": "industrial_agent_node",
-        "NOT_IDENTIFIED": END,
-    }
+    lambda s: s["next_node"],
+    {"EDUCATION":"education_agent_node","LAB":"lab_agent_node","INDUSTRIAL":"industrial_agent_node",
+     "GENERAL":"general_agent_node","NOT_IDENTIFIED":"general_agent_node"}
 )
