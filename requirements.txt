@@ -8,3 +8,5 @@ typing-extensions
 python-dotenv
 pandas
 chromadb
+supabase
+langchain-community
