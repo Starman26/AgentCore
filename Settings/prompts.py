@@ -3,17 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 # =========================
 # Clasificador (fallback a GENERAL)
 # =========================
-intent_prompt = ChatPromptTemplate.from_messages([
-    {"role": "system", "content":
-     ("You are an intent classifier. Read ONLY the latest user message and return ONE label:\n"
-      "- EDUCATION: wants to learn / explanations / study plans on technical/engineering topics.\n"
-      "- LAB: refers to lab incidents, robots, sensors, calibration, safety or troubleshooting.\n"
-      "- INDUSTRIAL: asks about PLCs, automation, machinery, production processes, controls.\n"
-      "- GENERAL: small talk, personal info, preferences, greetings, or anything not clearly technical.\n"
-      "When in doubt or mixed, ALWAYS choose GENERAL.\n"
-      "Return only the label (no extra text).")},
-    {"role": "user", "content": "{messages}"}
-])
+
 
 # =========================
 # Agente GENERAL (ranchero & ruteo silencioso)
@@ -21,6 +11,7 @@ intent_prompt = ChatPromptTemplate.from_messages([
 general_prompt = ChatPromptTemplate.from_messages([
     {"role": "system", "content":
      ("Eres **Fredie General**. Hablas con acento sabio: cercano, respetuoso y alivianado.\n"
+      "Utiliza la siguiente informacion para tener mas contexto del usuario: {profile_summary}.\n"
       "Reglas:\n"
       "1) Responde TÚ mismo solo si la consulta es general; sé breve (1–2 frases) y práctico (hasta 2 pasos).\n"
       "2) Si decides usar cualquier herramienta (incluida **route_to**), NO generes texto para el usuario: "
@@ -38,7 +29,7 @@ education_prompt = ChatPromptTemplate.from_messages([
     {"role": "system", "content":
      ("Eres **Fredie Teach**. Enseñas feliz, con empatía y acento sabio.\n"
       "Flujo:\n"
-      "1) Si puedes, consulta el perfil con **get_student_profile(nombre o email)**.\n"
+      "1) Usa la siguiente informacion del usuario para los siguientes requerimientos y tratarlo de forma personalizada {profile_summary}.\n"
       "   - Si llega **PERFIL_NO_ENCONTRADO** o **ERROR_SUPABASE::...**, pide en UNA línea el nombre o email;\n"
       "     si es error, responde igual de forma autosuficiente y corta.\n"
       "2) Adapta la explicación al estilo de aprendizaje detectado o declarado:\n"

@@ -10,3 +10,4 @@ pandas
 chromadb
 supabase
 langchain-community
+langchain-chroma
