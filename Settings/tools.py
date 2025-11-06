@@ -1,13 +1,22 @@
+from datetime import date, datetime, timezone
 import os
 from langchain_core.tools import tool
 from supabase import create_client, Client
 from rag.rag_logic import create_or_update_vectorstore
 from typing import Literal
 
+# Constants
+now_utc = datetime.now(tz=timezone.utc)
+timestamp_ms = int(now_utc.timestamp() * 1000)
+
 # -------- Supabase client (una sola instancia) --------
 SB: Client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 def _fetch_student(name_or_email: str):
+    """Helper: busca un estudiante por email o nombre parcial en Supabase.
+
+    Returns the first matching row dict or None.
+    """
     q = name_or_email.strip()
     if "@" in q:
         res = SB.table("students").select("*").eq("email", q).limit(1).execute()
@@ -15,6 +24,14 @@ def _fetch_student(name_or_email: str):
         res = SB.table("students").select("*").ilike("full_name", f"%{q}%").limit(1).execute()
     rows = res.data or []
     return rows[0] if rows else None
+
+def _submit_chat_history(session_id: int, role: Literal["student", "agent"], content: str, created_at: str = timestamp_ms):
+    SB.table("chat_messages").insert({
+        "session_id": session_id,
+        "role": role,
+        "content": content,
+        "created_at": created_at
+    }).execute()
 
 # -------- Tools de perfil de estudiante --------
 @tool
@@ -43,6 +60,11 @@ def get_student_profile(name_or_email: str) -> str:
     return (f"Perfil de {full} — Carrera: {major}. "
             f"Skills: {skills or 'N/D'}. Metas: {goals or 'N/D'}. "
             f"Intereses: {intr or 'N/D'}. {learning_desc}")
+
+@tool
+def submit_chat_history(session_id: int, role: Literal["student", "agent"], content: str, created_at: str = date.today().isoformat()) -> str:
+    _submit_chat_history(session_id, role, content, created_at)
+    return "OK"
 
 @tool
 def update_student_goals(name_or_email: str, new_goal: str) -> str:

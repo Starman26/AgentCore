@@ -11,12 +11,12 @@ from dotenv import load_dotenv; load_dotenv()
 import os
 
 from Settings.prompts import intent_prompt, general_prompt, education_prompt, lab_prompt, industrial_prompt
-from Settings.tools import retrieve_context,get_student_profile, update_student_goals, update_learning_style, route_to
+from Settings.tools import retrieve_context,get_student_profile, _submit_chat_history, update_student_goals, update_learning_style, route_to
 from Settings.state import State, SupervisorOutput 
 
-GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, route_to]
-LAB_TOOLS     = [retrieve_context, route_to]
-EDU_TOOLS       = [get_student_profile, update_learning_style, route_to]
+GENERAL_TOOLS = [get_student_profile, _submit_chat_history, update_student_goals, update_learning_style, route_to]
+LAB_TOOLS     = [_submit_chat_history, retrieve_context, route_to]
+EDU_TOOLS       = [_submit_chat_history, get_student_profile, update_learning_style, route_to]
 
 # ---------- LLM base ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -63,6 +63,24 @@ def router_from_lab(state: State):
     msg = state["messages"][-1].content
     route = msg.split("::",1)[1] if isinstance(msg,str) and msg.startswith("ROUTE::") else None
     return {"route_request": route}
+
+def persist_last_message_node(state: State):
+    session_id = state.get("session_id")
+    if not session_id:
+        return {}
+    msgs = state.get("messages") or []
+    if not msgs:
+        return {} 
+    last = msgs[-1]
+
+    if isinstance(last, AnyMessage):
+        role = last.role
+        content = last.content
+    else:
+        role = last.get("role", "agent") if isinstance(last, dict) else "agent"
+        content = last.get("content") if isinstance(last, dict) else str(last)
+
+    _submit_chat_history(session_id, role, content)
 
 graph = StateGraph(State)
 
