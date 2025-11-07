@@ -3,8 +3,8 @@ import pandas as pd
 from datetime import datetime
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
-from langchain.schema import Document
-
+from langchain_core.documents import Document
+from Settings.tools import retrieve_robot_support
 
 PERSIST_DIR = "robot_vector_db"
 CSV_PATH = "./robot_problems.csv"
@@ -15,7 +15,8 @@ def create_or_update_vectorstore():
     print("🔍 Checking vector database...")
 
     # Cargar CSV
-    df = pd.read_csv(CSV_PATH)
+    rows = retrieve_robot_support()
+    df = pd.DataFrame(rows)
 
     # Crear documentos
     docs = []
@@ -50,7 +51,7 @@ def create_or_update_vectorstore():
         else:
             print("✅ No updates needed.")
     else:
-        print("🆕 Creating new vector database...")
+        print("Creating new vector database...")
         vectorstore = Chroma.from_documents(
             documents=docs,
             embedding=embedding,
@@ -58,6 +59,6 @@ def create_or_update_vectorstore():
             persist_directory=PERSIST_DIR
         )
         vectorstore.persist()
-        print("✅ Vector database created successfully.")
+        print("Vector database created successfully.")
     
     return vectorstore

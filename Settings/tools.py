@@ -2,7 +2,7 @@ import os
 from langchain_core.tools import tool
 from supabase import create_client, Client
 from rag.rag_logic import create_or_update_vectorstore
-from typing import Literal
+from typing import Dict, Any, List
 
 # -------- Supabase client (una sola instancia) --------
 SB: Client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
@@ -89,10 +89,18 @@ def retrieve_context(query: str) -> str:
         )
     return "\n".join(out)
 
+@tool
+def retrieve_robot_support() -> List[Dict[str, Any]]:
+    res = SB.table("RoboSupportDB").select(
+        "created_at, robot_type, problem_title, problem_description, solution_description, author"
+    ).execute()
+    return res.data
 
 LAB_TOOLS       = [retrieve_context]
 GENERAL_TOOLS   = [get_student_profile, update_student_goals, update_learning_style]
 EDU_TOOLS       = [get_student_profile, update_learning_style]
+RAG_TOOLS       = [retrieve_robot_support]
+
 @tool
 def route_to(target: str) -> str:
     """Pide traspaso interno entre agentes. Valores: EDUCATION|LAB|INDUSTRIAL|GENERAL."""
