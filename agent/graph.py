@@ -64,7 +64,26 @@ def router_from_lab(state: State):
     route = msg.split("::",1)[1] if isinstance(msg,str) and msg.startswith("ROUTE::") else None
     return {"route_request": route}
 
-def persist_last_message_node(state: State):
+def save_user_input(state: State):
+    session_id = state.get("session_id")
+    if not session_id:
+        return {}
+    msgs = state.get("messages") or []
+    if not msgs:
+        return {} 
+    last = msgs[-1]
+
+    if isinstance(last, AnyMessage):
+        role = last.role
+        content = last.content
+    else:
+        role = last.get("role", "user") if isinstance(last, dict) else "agent"
+        content = last.get("content") if isinstance(last, dict) else str(last)
+
+    _submit_chat_history(session_id, role, content)
+    return {}
+
+def save_agent_output(state: State):
     session_id = state.get("session_id")
     if not session_id:
         return {}
@@ -81,6 +100,7 @@ def persist_last_message_node(state: State):
         content = last.get("content") if isinstance(last, dict) else str(last)
 
     _submit_chat_history(session_id, role, content)
+    return {}
 
 graph = StateGraph(State)
 
@@ -92,26 +112,24 @@ graph.add_node("industrial_agent_node",  industrial_agent_node)
 graph.add_node("router_general",   router_from_general)
 graph.add_node("router_education", router_from_education)
 graph.add_node("router_lab",       router_from_lab)
+graph.add_node("save_user_input", save_user_input)
+graph.add_node("save_agent_output", save_agent_output)
 
-# ToolNodes por agente (limpio y seguro)
 graph.add_node("general_tools",   ToolNode(GENERAL_TOOLS))
 graph.add_node("education_tools", ToolNode(EDU_TOOLS))
 graph.add_node("lab_tools",       ToolNode(LAB_TOOLS))
 
 graph.set_entry_point("classify_intent_node")
 
-# Invocación de tools por agente
 graph.add_conditional_edges("general_agent_node",   tools_condition, {"tools": "general_tools",   "__end__": END})
 graph.add_conditional_edges("education_agent_node", tools_condition, {"tools": "education_tools", "__end__": END})
 graph.add_conditional_edges("lab_agent_node",       tools_condition, {"tools": "lab_tools",       "__end__": END})
-graph.add_conditional_edges("industrial_agent_node", tools_condition, {"__end__": END})  # sin tools
+graph.add_conditional_edges("industrial_agent_node", tools_condition, {"__end__": END})
 
-# ToolNodes -> routers (un solo camino)
 graph.add_edge("general_tools",   "router_general")
 graph.add_edge("education_tools", "router_education")
 graph.add_edge("lab_tools",       "router_lab")
 
-# Routers deciden destino o regresan a su agente si no hubo route_to
 graph.add_conditional_edges(
     "router_general",
     lambda s: s.get("route_request") or "__back__",
@@ -131,8 +149,6 @@ graph.add_conditional_edges(
      "INDUSTRIAL":"industrial_agent_node","__back__":"lab_agent_node"}
 )
 
-
-# Clasificador (tal cual lo tienes)
 graph.add_conditional_edges(
     "classify_intent_node",
     lambda s: s["next_node"],
