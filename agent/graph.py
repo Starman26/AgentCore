@@ -4,6 +4,8 @@ from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph.message import AnyMessage, add_messages
+from langchain_core.messages import BaseMessage
+from langchain_core.runnables import RunnableConfig
 from pydantic.v1 import BaseModel, Field
 from langchain_core.tools import tool
 from langgraph.prebuilt import tools_condition, ToolNode
@@ -11,12 +13,12 @@ from dotenv import load_dotenv; load_dotenv()
 import os
 
 from Settings.prompts import intent_prompt, general_prompt, education_prompt, lab_prompt, industrial_prompt
-from Settings.tools import retrieve_context,get_student_profile, _submit_chat_history, update_student_goals, update_learning_style, route_to
+from Settings.tools import retrieve_context, get_student_profile, _submit_chat_history, update_student_goals, update_learning_style, route_to
 from Settings.state import State, SupervisorOutput 
 
-GENERAL_TOOLS = [get_student_profile, _submit_chat_history, update_student_goals, update_learning_style, route_to]
-LAB_TOOLS     = [_submit_chat_history, retrieve_context, route_to]
-EDU_TOOLS       = [_submit_chat_history, get_student_profile, update_learning_style, route_to]
+GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, route_to]
+LAB_TOOLS     = [retrieve_context, route_to]
+EDU_TOOLS     = [get_student_profile, update_learning_style, route_to]
 
 # ---------- LLM base ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -36,9 +38,9 @@ def classify_intent_node(state: State):
 
 # ---------- Runnables por agente ----------
 general_llm      = llm.bind_tools(GENERAL_TOOLS)
-education_llm    = llm.bind_tools(EDU_TOOLS)     # para leer/actualizar perfil
+education_llm    = llm.bind_tools(EDU_TOOLS)
 lab_llm          = llm.bind_tools(LAB_TOOLS)
-industrial_llm   = llm                           # sin tools por ahora
+industrial_llm   = llm
 
 general_runnable     = general_prompt   | general_llm
 education_runnable   = education_prompt | education_llm
@@ -64,46 +66,79 @@ def router_from_lab(state: State):
     route = msg.split("::",1)[1] if isinstance(msg,str) and msg.startswith("ROUTE::") else None
     return {"route_request": route}
 
-def save_user_input(state: State):
+def save_user_input(state: State, config: RunnableConfig):
+    """Save the input message from the user into the database."""
     session_id = state.get("session_id")
     if not session_id:
+        session_id = config.get("configurable", {}).get("session_id")
+    if not session_id:
+        thread_id = config.get("configurable", {}).get("thread_id")
+        if thread_id:
+            session_id = thread_id
+    
+    if not session_id:
         return {}
+    
     msgs = state.get("messages") or []
     if not msgs:
         return {} 
+    
     last = msgs[-1]
 
-    if isinstance(last, AnyMessage):
-        role = last.role
+    if isinstance(last, BaseMessage):
+        role = "student" if last.type == "human" else last.type
         content = last.content
+        if isinstance(content, list):
+            text_parts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in content]
+            content = " ".join(text_parts).strip()
     else:
-        role = last.get("role", "user") if isinstance(last, dict) else "agent"
+        role = "student"
         content = last.get("content") if isinstance(last, dict) else str(last)
 
-    _submit_chat_history(session_id, role, content)
+    try:
+        _submit_chat_history(session_id, role, content)
+    except Exception as e:
+        print(f"[save_user_input] Error: {e}")
     return {}
 
-def save_agent_output(state: State):
+def save_agent_output(state: State, config: RunnableConfig):
+    """Save the output message from the agent into the database."""
     session_id = state.get("session_id")
     if not session_id:
+        session_id = config.get("configurable", {}).get("session_id")
+    if not session_id:
+        thread_id = config.get("configurable", {}).get("thread_id")
+        if thread_id:
+            session_id = thread_id
+    
+    if not session_id:
         return {}
+    
     msgs = state.get("messages") or []
     if not msgs:
         return {} 
+    
     last = msgs[-1]
 
-    if isinstance(last, AnyMessage):
-        role = last.role
+    if isinstance(last, BaseMessage):
+        role = "agent"
         content = last.content
+        if isinstance(content, list):
+            text_parts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in content]
+            content = " ".join(text_parts).strip()
     else:
-        role = last.get("role", "agent") if isinstance(last, dict) else "agent"
+        role = "agent"
         content = last.get("content") if isinstance(last, dict) else str(last)
 
-    _submit_chat_history(session_id, role, content)
+    try:
+        _submit_chat_history(session_id, role, content)
+    except Exception as e:
+        print(f"[save_agent_output] Error: {e}")
     return {}
 
 graph = StateGraph(State)
 
+graph.add_node("save_user_input", save_user_input)
 graph.add_node("classify_intent_node", classify_intent_node)
 graph.add_node("general_agent_node",     general_agent_node)
 graph.add_node("education_agent_node",   education_agent_node)
@@ -112,19 +147,21 @@ graph.add_node("industrial_agent_node",  industrial_agent_node)
 graph.add_node("router_general",   router_from_general)
 graph.add_node("router_education", router_from_education)
 graph.add_node("router_lab",       router_from_lab)
-graph.add_node("save_user_input", save_user_input)
 graph.add_node("save_agent_output", save_agent_output)
 
 graph.add_node("general_tools",   ToolNode(GENERAL_TOOLS))
 graph.add_node("education_tools", ToolNode(EDU_TOOLS))
 graph.add_node("lab_tools",       ToolNode(LAB_TOOLS))
 
-graph.set_entry_point("classify_intent_node")
+graph.set_entry_point("save_user_input")
+graph.add_edge("save_user_input", "classify_intent_node")
 
-graph.add_conditional_edges("general_agent_node",   tools_condition, {"tools": "general_tools",   "__end__": END})
-graph.add_conditional_edges("education_agent_node", tools_condition, {"tools": "education_tools", "__end__": END})
-graph.add_conditional_edges("lab_agent_node",       tools_condition, {"tools": "lab_tools",       "__end__": END})
-graph.add_conditional_edges("industrial_agent_node", tools_condition, {"__end__": END})
+graph.add_conditional_edges("general_agent_node",   tools_condition, {"tools": "general_tools",   "__end__": "save_agent_output"})
+graph.add_conditional_edges("education_agent_node", tools_condition, {"tools": "education_tools", "__end__": "save_agent_output"})
+graph.add_conditional_edges("lab_agent_node",       tools_condition, {"tools": "lab_tools",       "__end__": "save_agent_output"})
+graph.add_conditional_edges("industrial_agent_node", tools_condition, {"__end__": "save_agent_output"})
+
+graph.add_edge("save_agent_output", END)
 
 graph.add_edge("general_tools",   "router_general")
 graph.add_edge("education_tools", "router_education")
