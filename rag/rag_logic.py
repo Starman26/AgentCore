@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 
 PERSIST_DIR = "robot_vector_db"

@@ -9,7 +9,8 @@ IntentType = Literal["EDUCATION", "LAB", "INDUSTRIAL", "GENERAL", "NOT_IDENTIFIE
 class State(TypedDict):
     messages: Annotated[List[AnyMessage], add_messages]
     next_node: IntentType
-    route_request: Optional[Literal["EDUCATION", "LAB", "INDUSTRIAL", "GENERAL"]]  # para route_to
+    route_request: Optional[Literal["EDUCATION", "LAB", "INDUSTRIAL", "GENERAL"]]  
+    session_id: Optional[int]
 
 # Output del clasificador
 class SupervisorOutput(BaseModel):

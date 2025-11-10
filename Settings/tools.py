@@ -1,13 +1,23 @@
+from datetime import date, datetime, timezone
 import os
+from uuid import UUID
 from langchain_core.tools import tool
 from supabase import create_client, Client
 from rag.rag_logic import create_or_update_vectorstore
-from typing import Literal
+from typing import Literal, Union
+
+# Constants
+now_utc = datetime.now(tz=timezone.utc)
+timestamp_ms = int(now_utc.timestamp() * 1000)
 
 # -------- Supabase client (una sola instancia) --------
 SB: Client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 def _fetch_student(name_or_email: str):
+    """Helper: busca un estudiante por email o nombre parcial en Supabase.
+
+    Returns the first matching row dict or None.
+    """
     q = name_or_email.strip()
     if "@" in q:
         res = SB.table("students").select("*").eq("email", q).limit(1).execute()
@@ -15,6 +25,41 @@ def _fetch_student(name_or_email: str):
         res = SB.table("students").select("*").ilike("full_name", f"%{q}%").limit(1).execute()
     rows = res.data or []
     return rows[0] if rows else None
+
+def _submit_chat_history(session_id: Union[int, str, UUID], role: Literal["student", "agent"], content: str, created_at: str = None, user_id: str = None):
+    """Helper to save chat message to Supabase. Accepts int, string, or UUID for session_id."""
+    if isinstance(session_id, UUID):
+        session_id = str(session_id)
+    
+    if created_at is None:
+        created_at = datetime.now(tz=timezone.utc).isoformat()
+    
+    if user_id is None:
+        user_id = "00000000-0000-0000-0000-000000000000"  
+    try:
+        try:
+            SB.table("app_user").upsert({
+                "id": user_id,
+                "created_at": created_at
+            }, on_conflict="id").execute()
+        except Exception:
+            pass
+
+        SB.table("chat_session").upsert({
+            "id": session_id,
+            "user_id": user_id,
+            "started_at": created_at 
+        }, on_conflict="id").execute()
+        
+        return SB.table("chat_message").insert({
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "created_at": created_at
+        }).execute()
+    except Exception as e:
+        print(f"Error saving chat: {e}")
+        raise
 
 # -------- Tools de perfil de estudiante --------
 @tool
@@ -43,6 +88,12 @@ def get_student_profile(name_or_email: str) -> str:
     return (f"Perfil de {full} — Carrera: {major}. "
             f"Skills: {skills or 'N/D'}. Metas: {goals or 'N/D'}. "
             f"Intereses: {intr or 'N/D'}. {learning_desc}")
+
+@tool
+def submit_chat_history(session_id: int, role: Literal["student", "agent"], content: str, created_at: str = date.today().isoformat()) -> str:
+    """Save a message to the database."""
+    _submit_chat_history(session_id, role, content, created_at)
+    return "OK"
 
 @tool
 def update_student_goals(name_or_email: str, new_goal: str) -> str:
