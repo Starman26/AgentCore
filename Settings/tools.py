@@ -41,8 +41,14 @@ def _fetch_student(name_or_email: str):
     rows = res.data or []
     return rows[0] if rows else None
 
-def _submit_chat_history(session_id: Union[int, str, UUID], role: Literal["student", "agent"], content: str, created_at: str = None, user_id: str = None):
-    """Helper to save chat message to Supabase. Accepts int, string, or UUID for session_id."""
+def _submit_chat_history(
+    session_id: Union[int, str, UUID],
+    role: Literal["student", "agent"],
+    content: str,
+    created_at: Optional[str] = None,
+    user_id: Optional[str] = None,
+):
+    """Guarda un mensaje en Supabase (app_user, chat_session, chat_message)."""
     if isinstance(session_id, UUID):
         session_id = str(session_id)
 
@@ -149,6 +155,7 @@ def submit_chat_history(session_id: int, role: Literal["student", "agent"], cont
     _submit_chat_history(session_id, role, content, created_at)
     return "OK"
 
+# ---- Tools de actualización de perfil ----
 @tool
 def update_student_goals(name_or_email: str, new_goal: str) -> str:
     """Agrega una meta al perfil (JSONB)."""
@@ -194,12 +201,30 @@ def retrieve_context(query: str) -> str:
         )
     return "\n".join(out) if out else "RAG_EMPTY"
 
-
-LAB_TOOLS       = [retrieve_context]
-GENERAL_TOOLS   = [get_student_profile, update_student_goals, update_learning_style]
-EDU_TOOLS       = [get_student_profile, update_learning_style]
+# ---- Tool de ruteo interno entre agentes ----
 @tool
 def route_to(target: str) -> str:
-    """Pide traspaso interno entre agentes. Valores: EDUCATION|LAB|INDUSTRIAL|GENERAL."""
-    target = target.upper()
-    return f"ROUTE::{target}"
+    """Traspaso interno entre agentes. Valores: EDUCATION|LAB|INDUSTRIAL|GENERAL."""
+    return f"ROUTE::{(target or '').upper()}"
+
+# ---- Tool de fecha/hora actual (con state opcional) ----
+@tool
+def current_datetime(state: Optional[State] = None, tz: Optional[str] = None) -> str:
+    """
+    Devuelve la fecha/hora actual en la zona 'tz' (o state.tz o America/Monterrey)
+    en tres formatos: ISO local, ISO UTC y humano en español.
+    """
+    tz_name = tz or (state.get("tz") if isinstance(state, dict) else None) or "America/Monterrey"
+    now_loc = datetime.now(ZoneInfo(tz_name))
+    out = {
+        "tz": tz_name,
+        "now_local": now_loc.isoformat(),
+        "now_utc": datetime.now(tz=timezone.utc).isoformat(),
+        "now_human": now_loc.strftime("%A, %d %b %Y, %H:%M"),
+    }
+    return str(out)
+
+# =================== TOOL SETS ===================
+LAB_TOOLS     = [retrieve_context, web_research, route_to]
+GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, web_research, route_to]
+EDU_TOOLS     = [get_student_profile, update_learning_style, web_research, route_to]
