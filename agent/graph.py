@@ -6,6 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph.message import AnyMessage, add_messages
 from pydantic.v1 import BaseModel, Field
 from langchain_core.messages import ToolMessage
+from langchain_core.runnables.config import RunnableConfig
 from dotenv import load_dotenv; load_dotenv()
 import os
 import re
@@ -120,9 +121,15 @@ def _inject_time_fields(state: State) -> None:
     state["now_utc"] = datetime.utcnow().isoformat() + "Z"
     state["now_human"] = now_local_dt.strftime("%A, %d %b %Y, %H:%M")
 
-def initial_node(state: State) -> State:
-    state = dict(state)  # copia defensiva
+def initial_node(state: State, config: RunnableConfig) -> State:
+    state = dict(state) 
     _inject_time_fields(state)
+
+    if not state.get("session_id"):
+        configurable = config.get("configurable", {})
+        thread_id = configurable.get("thread_id")
+        if thread_id:
+            state["session_id"] = thread_id
 
     if state.get("profile_summary"):
         return state
@@ -159,8 +166,9 @@ def save_user_input(state: State):
         role = "student"
         content = last.get("content") if isinstance(last, dict) else str(last)
 
+    user_id = state.get("user_email")
     try:
-        _submit_chat_history(session_id, role, content)
+        _submit_chat_history(session_id, role, content, user_id=user_id)
     except Exception as e:
         print(f"[save_user_input] Error: {e}")
     return {}
@@ -188,8 +196,9 @@ def save_agent_output(state: State):
         role = "agent"
         content = last.get("content") if isinstance(last, dict) else str(last)
 
+    user_id = state.get("user_email")
     try:
-        _submit_chat_history(session_id, role, content)
+        _submit_chat_history(session_id, role, content, user_id=user_id)
     except Exception as e:
         print(f"[save_agent_output] Error: {e}")
     return {}
