@@ -16,6 +16,10 @@ from tavily import TavilyClient
 from rag.rag_logic import create_or_update_vectorstore
 from Settings.state import State  # solo para tipado opcional
 
+# Constants
+now_utc = datetime.now(tz=timezone.utc)
+timestamp_ms = int(now_utc.timestamp() * 1000)
+
 # ------------------- CONFIGURACIÓN -------------------
 load_dotenv()
 
@@ -25,7 +29,6 @@ _TAVILY_KEY = os.getenv("TAVILY_API_KEY")
 _tavily: Optional[TavilyClient] = TavilyClient(api_key=_TAVILY_KEY) if _TAVILY_KEY else None
 
 # =================== HELPERS ===================
-
 def _fetch_student(name_or_email: str):
     """Busca un estudiante por email o nombre parcial en Supabase. Regresa dict o None."""
     q = (name_or_email or "").strip()

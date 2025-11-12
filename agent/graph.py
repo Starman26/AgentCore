@@ -16,7 +16,7 @@ import locale
 from Settings.prompts import general_prompt, education_prompt, lab_prompt, industrial_prompt
 from Settings.tools import (
     web_research, retrieve_context, update_student_goals, update_learning_style, route_to,
-    current_datetime
+    current_datetime, _submit_chat_history, get_student_profile
 )
 from helpers.fetch_user import get_student_profile
 
@@ -61,6 +61,7 @@ class State(TypedDict, total=False):
     ]
     # Identidad de usuario (inyectada por el frontend)
     user_email: Optional[str]
+    session_id: Optional[str]
 
 # (opcional) herramienta estructurada para cierre/escala
 class CompleteOrEscalate(BaseModel):
@@ -80,7 +81,7 @@ llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY, temperature=0, req
 # Tools por agente (incluye route_to para ruteo silencioso)
 # =========================
 GENERAL_TOOLS   = [CompleteOrEscalate, web_research, update_student_goals, update_learning_style, current_datetime]
-EDU_TOOLS       = [CompleteOrEscalate, web_research, update_learning_style, current_datetime]
+EDU_TOOLS       = [CompleteOrEscalate, web_research, update_learning_style, current_datetime, get_student_profile]
 LAB_TOOLS       = [CompleteOrEscalate, web_research, retrieve_context, current_datetime]
 IND_TOOLS       = [CompleteOrEscalate, web_research, current_datetime]
 
@@ -134,6 +135,64 @@ def initial_node(state: State) -> State:
     summary = get_student_profile(user_info)
     state["profile_summary"] = summary
     return state
+
+def save_user_input(state: State):
+    """Save the input message from the user into the database."""
+    session_id = state.get("session_id")
+
+    if not session_id:
+        return {}
+    
+    msgs = state.get("messages") or []
+    if not msgs:
+        return {} 
+    
+    last = msgs[-1]
+
+    if hasattr(last, 'type') and hasattr(last, 'content'):
+        role = "student" if last.type == "human" else last.type
+        content = last.content
+        if isinstance(content, list):
+            text_parts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in content]
+            content = " ".join(text_parts).strip()
+    else:
+        role = "student"
+        content = last.get("content") if isinstance(last, dict) else str(last)
+
+    try:
+        _submit_chat_history(session_id, role, content)
+    except Exception as e:
+        print(f"[save_user_input] Error: {e}")
+    return {}
+
+def save_agent_output(state: State):
+    """Save the output message from the agent into the database."""
+    session_id = state.get("session_id")
+    
+    if not session_id:
+        return {}
+    
+    msgs = state.get("messages") or []
+    if not msgs:
+        return {} 
+    
+    last = msgs[-1]
+
+    if hasattr(last, 'type') and hasattr(last, 'content'):
+        role = "agent"
+        content = last.content
+        if isinstance(content, list):
+            text_parts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in content]
+            content = " ".join(text_parts).strip()
+    else:
+        role = "agent"
+        content = last.get("content") if isinstance(last, dict) else str(last)
+
+    try:
+        _submit_chat_history(session_id, role, content)
+    except Exception as e:
+        print(f"[save_agent_output] Error: {e}")
+    return {}
 
 def initial_routing(state: State) -> Literal["router"]:
     return "router"
@@ -217,8 +276,12 @@ Devuelve únicamente la tool call apropiada."""),
 graph = StateGraph(State)
 
 graph.add_node("initial_node", initial_node)
-graph.add_conditional_edges("initial_node", initial_routing)
+graph.add_node("save_user_input", save_user_input)
+graph.add_node("save_agent_output", save_agent_output)
+
 graph.set_entry_point("initial_node")
+graph.add_edge("initial_node", "save_user_input")
+graph.add_edge("save_user_input", "router")
 
 router_runnable = agent_route_prompt | llm.bind_tools(
     [ToAgentEducation, ToAgentGeneral, ToAgentLab, ToAgentIndustrial],
@@ -277,13 +340,15 @@ tools_node = ToolNode(
 )
 graph.add_node("tools", tools_node)
 
-# Después de cada agente: si hay tool_calls → ejecutar tools; si no, terminar
+# Después de cada agente: si hay tool_calls → ejecutar tools; si no, guardar output y terminar
 for agent in ["general_agent_node", "education_agent_node", "lab_agent_node", "industrial_agent_node"]:
     graph.add_conditional_edges(
         agent,
         tools_condition,
-        {"tools": "tools", "__end__": END}
+        {"tools": "tools", "__end__": "save_agent_output"}
     )
+
+graph.add_edge("save_agent_output", END)
 
 # Volver desde "tools" al agente que está en la cima del stack
 def return_to_current_agent(state: State) -> str:
