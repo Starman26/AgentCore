@@ -4,7 +4,7 @@ from uuid import UUID
 from langchain_core.tools import tool
 from supabase import create_client, Client
 from rag.rag_logic import create_or_update_vectorstore
-from typing import Literal, Union
+from typing import List, Literal, Union
 
 # Constants
 now_utc = datetime.now(tz=timezone.utc)
@@ -25,6 +25,25 @@ def _fetch_student(name_or_email: str):
         res = SB.table("students").select("*").ilike("full_name", f"%{q}%").limit(1).execute()
     rows = res.data or []
     return rows[0] if rows else None
+
+def _submit_student(full_name: str, email: str, major: str, skills: List[str], goals: List[str], interests: str, last_seen: Union[int, str] = timestamp_ms, learning_style: dict = None):
+    """Helper to insert student profile to Supabase if the agent doesnt know who the student is."""
+    if learning_style is None:
+        learning_style = {}
+    try:
+        SB.table("students").insert({
+            "full_name": full_name,
+            "email": email,
+            "major": major,
+            "skills": skills,
+            "goals": goals,
+            "interests": interests,
+            "last_seen": last_seen,
+            "learning_style": learning_style
+        }, on_conflict="email").execute()
+    except Exception as e:
+        print(f"Error saving student profile: {e}")
+        raise
 
 def _submit_chat_history(session_id: Union[int, str, UUID], role: Literal["student", "agent"], content: str, created_at: str = None, user_id: str = None):
     """Helper to save chat message to Supabase. Accepts int, string, or UUID for session_id."""
@@ -96,6 +115,38 @@ def submit_chat_history(session_id: int, role: Literal["student", "agent"], cont
     return "OK"
 
 @tool
+def submit_student_profile(full_name: str, email: str, major: str, skills: List[str], goals: List[str], interests: str, learning_style: dict = None) -> str:
+    """Insert or update the student profile."""
+    _submit_student(full_name, email, major, skills, goals, interests, learning_style=learning_style)
+    return "OK"
+
+@tool
+def identify_user_from_message(message: str) -> str:
+    """Attempts to identify the user by searching for an email or a name in the message.
+    
+    Returns a string with the format:
+    - 'FOUND:email:name' if a user is found
+    - 'NOT_FOUND' if no match is found
+    """
+    words = message.split()
+    
+    for word in words:
+        if "@" in word:
+            clean_email = word.strip(".,;:!?")
+            row = _fetch_student(clean_email)
+            if row:
+                return f"FOUND:{row.get('email')}:{row.get('full_name')}"
+    
+    for i in range(len(words) - 1):
+        if words[i] and words[i][0].isupper() and words[i+1] and words[i+1][0].isupper():
+            potential_name = f"{words[i]} {words[i+1]}"
+            row = _fetch_student(potential_name)
+            if row:
+                return f"FOUND:{row.get('email')}:{row.get('full_name')}"
+    
+    return "NOT_FOUND"
+
+@tool
 def update_student_goals(name_or_email: str, new_goal: str) -> str:
     """Agrega una meta al perfil (JSONB)."""
     row = _fetch_student(name_or_email)
@@ -140,12 +191,12 @@ def retrieve_context(query: str) -> str:
         )
     return "\n".join(out)
 
-
-LAB_TOOLS       = [retrieve_context]
-GENERAL_TOOLS   = [get_student_profile, update_student_goals, update_learning_style]
-EDU_TOOLS       = [get_student_profile, update_learning_style]
 @tool
 def route_to(target: str) -> str:
     """Pide traspaso interno entre agentes. Valores: EDUCATION|LAB|INDUSTRIAL|GENERAL."""
     target = target.upper()
     return f"ROUTE::{target}"
+
+LAB_TOOLS       = [retrieve_context, route_to]
+GENERAL_TOOLS   = [get_student_profile, update_student_goals, update_learning_style, route_to, submit_student_profile, identify_user_from_message]
+EDU_TOOLS       = [get_student_profile, update_learning_style, route_to]

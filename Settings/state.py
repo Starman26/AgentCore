@@ -11,6 +11,9 @@ class State(TypedDict):
     next_node: IntentType
     route_request: Optional[Literal["EDUCATION", "LAB", "INDUSTRIAL", "GENERAL"]]  
     session_id: Optional[int]
+    user_identified: Optional[bool]
+    user_email: Optional[str]
+    user_name: Optional[str]
 
 # Output del clasificador
 class SupervisorOutput(BaseModel):
