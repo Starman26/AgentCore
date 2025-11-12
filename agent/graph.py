@@ -23,9 +23,9 @@ from Settings.prompts import (
     general_prompt, education_prompt, lab_prompt, industrial_prompt
 )
 from Settings.tools import (
-    web_research, retrieve_context, get_student_profile,  # get_student_profile (tool para prompts si lo ocupas)
+    web_research, retrieve_context, get_student_profile,
     update_student_goals, update_learning_style, route_to,
-    current_datetime, _submit_chat_history                # helper de guardado
+    current_datetime, _submit_chat_history
 )
 
 # =========================
@@ -44,26 +44,17 @@ def update_current_agent_stack(left: list[str], right: Optional[str]) -> list[st
     return left + [right]
 
 class State(TypedDict, total=False):
-    # Mensajes
     messages: Annotated[List[AnyMessage], add_messages]
-
-    # Contexto de usuario
     profile_summary: Optional[str]
-    user_email: Optional[str]   # (inyectado por el frontend)
-
-    # Reloj / zona horaria (se rellenan en initial_node)
+    user_email: Optional[str]
     tz: str
     now_utc: str
     now_local: str
     now_human: str
-
-    # Pila de agentes activos (router moderno)
     current_agent: Annotated[
         List[Literal["education_agent_node","general_agent_node","lab_agent_node","industrial_agent_node","router"]],
         update_current_agent_stack
     ]
-
-    # Compat / persistencia
     session_id: Optional[int]
 
 # (opcional) herramienta de cierre/escala
@@ -126,14 +117,13 @@ def initial_node(state: State) -> State:
     _inject_time_fields(state)
     if state.get("profile_summary"):
         return state
-
-    # Si tienes tool get_student_profile(name/email), aquí lee de tu DB/servicio
     user = state.get("user_email")
     if not user:
         state["profile_summary"] = "ERROR: no se proporcionó user_info"
         return state
     try:
-        summary = get_student_profile.invoke({"name_or_email": user}) if hasattr(get_student_profile, "invoke") else get_student_profile(user)  # compat
+        # compat: si está registrado como tool vs función normal
+        summary = get_student_profile.invoke({"name_or_email": user}) if hasattr(get_student_profile, "invoke") else get_student_profile(user)
     except Exception:
         summary = f"Perfil de {user}"
     state["profile_summary"] = summary
@@ -154,7 +144,6 @@ def _fallback_pick_agent(text: str) -> str:
     return "ToAgentGeneral"
 
 def intitial_route_function(state: State) -> Literal["ToAgentEducation","ToAgentIndustrial","ToAgentGeneral","ToAgentLab","__end__"]:
-    # si el mensaje fue sólo tools y no hay más que hacer
     if tools_condition(state) == END:
         return END
     tool_calls = getattr(state["messages"][-1], "tool_calls", []) or []
@@ -197,7 +186,6 @@ class Assistant:
 # Persistencia de mensajes
 # =========================
 def save_user_input(state: State, config: RunnableConfig):
-    """Guarda el input del usuario en la base de datos (usa session_id si viene en config/state)."""
     session_id = state.get("session_id") or config.get("configurable", {}).get("session_id") or config.get("configurable", {}).get("thread_id")
     if not session_id: return {}
     msgs = state.get("messages") or []
@@ -221,7 +209,6 @@ def save_user_input(state: State, config: RunnableConfig):
     return {}
 
 def save_agent_output(state: State, config: RunnableConfig):
-    """Guarda la salida del agente en la base de datos."""
     session_id = state.get("session_id") or config.get("configurable", {}).get("session_id") or config.get("configurable", {}).get("thread_id")
     if not session_id: return {}
     msgs = state.get("messages") or []
@@ -262,12 +249,12 @@ graph.add_node("router", Assistant(agent_route_prompt))
 graph.add_edge("save_user_input", "router")
 graph.add_conditional_edges("router", intitial_route_function)
 
-# 3) Entry nodes (tool-calls) -> agentes
+# 3) Entry nodes (tool-calls) -> agentes (inyecta ToolMessage con tool_call_id)
 def create_entry_node(assistant_name: str, current_agent: str) -> Callable:
     def entry_node(state: State) -> dict:
-        tool_call_id = state["messages"][-1].tool_calls[0]["id"]
-        msg = ToolMessage(tool_call_id=tool_call_id, content=f"Ahora eres {assistant_name}. Continúa con la intención del usuario.")
-        return {"messages": [msg], "current_agent": current_agent}
+        tcs = getattr(state["messages"][-1], "tool_calls", []) or []
+        msgs = [ToolMessage(tool_call_id=tc["id"], content=f"Ahora eres {assistant_name}. Continúa con la intención del usuario.") for tc in tcs]
+        return {"messages": msgs, "current_agent": current_agent}
     return entry_node
 
 graph.add_node("ToAgentEducation",  create_entry_node("Agente Educativo",      "education_agent_node"))
@@ -302,7 +289,7 @@ graph.add_conditional_edges("tools", return_to_current_agent)
 graph.add_node("save_agent_output", save_agent_output)
 graph.add_edge("save_agent_output", END)
 
-# (Opcional) pop del agente (si usas CompleteOrEscalate para cerrar)
+# (Opcional) pop del agente si usas CompleteOrEscalate
 def pop_current_agent(state: State) -> dict:
     messages = []
     if state.get("messages") and getattr(state["messages"][-1], "tool_calls", None):
@@ -311,4 +298,3 @@ def pop_current_agent(state: State) -> dict:
     return {"current_agent": "pop", "messages": messages}
 
 graph.add_node("leave_agent", pop_current_agent)
-# Fin
