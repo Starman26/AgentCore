@@ -14,12 +14,12 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import locale
 
-from Settings.prompts import general_prompt, education_prompt, lab_prompt, industrial_prompt
+from Settings.prompts import general_prompt, education_prompt, lab_prompt, industrial_prompt, identification_prompt, agent_route_prompt
 from Settings.tools import (
     web_research, retrieve_context, update_student_goals, update_learning_style, route_to,
-    current_datetime, _submit_chat_history, get_student_profile
+    current_datetime, _submit_chat_history, get_student_profile, check_user_exists, 
+    register_new_student, update_student_info, _fetch_student
 )
-from helpers.fetch_user import get_student_profile
 
 # =========================
 # Estado del grafo
@@ -60,11 +60,12 @@ class State(TypedDict, total=False):
         ],
         update_current_agent_stack
     ]
-    # Identidad de usuario (inyectada por el frontend)
+    user_identified: Optional[bool]
     user_email: Optional[str]
+    user_name: Optional[str]
     session_id: Optional[str]
+    awaiting_user_info: Optional[str]
 
-# (opcional) herramienta estructurada para cierre/escala
 class CompleteOrEscalate(BaseModel):
     reason: str = Field(description="Motivo para finalizar o escalar.")
     cancel: bool = Field(default=False, description="True=cierra; False=continúa/escalado.")
@@ -86,7 +87,6 @@ EDU_TOOLS       = [CompleteOrEscalate, web_research, update_learning_style, curr
 LAB_TOOLS       = [CompleteOrEscalate, web_research, retrieve_context, current_datetime]
 IND_TOOLS       = [CompleteOrEscalate, web_research, current_datetime]
 
-
 # =========================
 # Runnables por agente
 # =========================
@@ -94,16 +94,148 @@ general_llm      = llm.bind_tools(GENERAL_TOOLS)
 education_llm    = llm.bind_tools(EDU_TOOLS)
 lab_llm          = llm.bind_tools(LAB_TOOLS)
 industrial_llm   = llm.bind_tools(IND_TOOLS)
+identification_llm = llm.bind_tools([check_user_exists, register_new_student, update_student_info])
 
 general_runnable     = general_prompt   | general_llm
 education_runnable   = education_prompt | education_llm
 lab_runnable         = lab_prompt       | lab_llm
 industrial_runnable  = industrial_prompt| industrial_llm
+identification_runnable = identification_prompt | identification_llm
 
 def general_agent_node(state: State):     return {"messages": general_runnable.invoke(state)}
 def education_agent_node(state: State):   return {"messages": education_runnable.invoke(state)}
 def lab_agent_node(state: State):         return {"messages": lab_runnable.invoke(state)}
 def industrial_agent_node(state: State):  return {"messages": industrial_runnable.invoke(state)}
+
+def identify_user_node(state: State):
+    """
+    Identify the user by asking for their name and email if not already identified.
+    """
+    if state.get("user_identified"):
+        return {}
+    
+    messages = state.get("messages", [])
+    has_asked_for_info = False
+    for msg in messages:
+        if hasattr(msg, 'type') and msg.type == 'ai':
+            content = getattr(msg, 'content', '')
+            if ('nombre' in content.lower() and 'correo' in content.lower()) or \
+               ('carrera' in content.lower() or 'habilidades' in content.lower()):
+                has_asked_for_info = True
+                break
+    
+    if not has_asked_for_info:
+        from langchain_core.messages import AIMessage
+        return {
+            "messages": [AIMessage(content="¡Hola! Para poder ayudarte mejor, necesito conocerte primero. ¿Podrías decirme tu nombre completo y correo electrónico?")],
+            "awaiting_user_info": "name_email"
+        }
+    
+    result = identification_runnable.invoke(state)
+    return {"messages": result}
+
+def check_identification_status(state: State) -> Literal["identified", "tools", "await_user"]:
+    """
+    Verify the user's identification status and decide the next step.
+    """
+    if not state.get("user_identified"):
+        messages = state.get("messages", [])
+        if messages and hasattr(messages[-1], "tool_calls") and messages[-1].tool_calls:
+            return "tools"
+        
+        if messages and hasattr(messages[-1], "type") and messages[-1].type == "ai":
+            return "await_user"
+        
+        return "await_user"
+    
+    messages = state.get("messages", [])
+    if messages and hasattr(messages[-1], "type") and messages[-1].type == "ai":
+        last_content = getattr(messages[-1], "content", "")
+        if "Ya te tengo identificado" in last_content or "¿En qué puedo ayudarte" in last_content:
+            return "await_user"
+    
+    return "identified"
+
+def check_after_identification_tools(state: State) -> Literal["identified", "continue_identifying", "await_user"]:
+    """
+    After running identification tools, decide the next step.
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return "await_user"
+    
+    if state.get("user_identified"):
+        last_msg = messages[-1]
+        if hasattr(last_msg, "type") and last_msg.type == "ai":
+            content = getattr(last_msg, "content", "")
+            if "Ya te tengo identificado" in content or "¿En qué puedo ayudarte" in content:
+                return "await_user"
+        return "identified"
+    
+    last_msg = messages[-1]
+    if hasattr(last_msg, "content") and last_msg.content == "NOT_FOUND":
+        return "continue_identifying"
+    
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        return "continue_identifying"
+    
+    if hasattr(last_msg, "type") and last_msg.type == "ai":
+        return "await_user"
+    
+    return "continue_identifying"
+
+def process_identification_tools(state: State):
+    """
+    Processes identification tools and updates the user's state.
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+    
+    messages = state.get("messages", [])
+    if not messages or not hasattr(messages[-1], "tool_calls") or not messages[-1].tool_calls:
+        return {}
+    
+    tool_call = messages[-1].tool_calls[0]
+    tool_name = tool_call["name"]
+    tool_args = tool_call.get("args", {})
+    tool_call_id = tool_call["id"]
+    
+    result_content = ""
+    email = None
+    full_name = None
+    
+    try:
+        if tool_name == "check_user_exists":
+            email = tool_args.get("email", "")
+            result_content = check_user_exists.invoke({"email": email})
+        elif tool_name == "register_new_student":
+            email = tool_args.get("email", "")
+            full_name = tool_args.get("full_name", "")
+            result_content = register_new_student.invoke(tool_args)
+        elif tool_name == "update_student_info":
+            email = tool_args.get("email", "")
+            result_content = update_student_info.invoke(tool_args)
+    except Exception as e:
+        result_content = f"ERROR:{str(e)}"
+    
+    tool_message = ToolMessage(content=result_content, tool_call_id=tool_call_id)
+    
+    if result_content == "OK" or "EXISTS:" in result_content:
+        if email:
+            student = _fetch_student(email)
+            if student:
+                profile_summary = get_student_profile(email)
+                confirmation_msg = AIMessage(
+                    content=f"¡Perfecto, {student.get('full_name', 'usuario')}! Ya te tengo identificado. ¿En qué puedo ayudarte hoy?"
+                )
+                return {
+                    "messages": [tool_message, confirmation_msg],
+                    "user_identified": True,
+                    "user_email": email,
+                    "user_name": student.get('full_name', ''),
+                    "profile_summary": profile_summary,
+                    "awaiting_user_info": None
+                }
+    return {"messages": [tool_message]}
 
 # =========================
 # Nodo inicial: perfil + fecha/hora
@@ -114,7 +246,6 @@ def _inject_time_fields(state: State) -> None:
     try:
         locale.setlocale(locale.LC_TIME, "es_MX.UTF-8")
     except Exception:
-        # Si no existe el locale en el SO, seguimos con nombres en inglés
         pass
     now_local_dt = datetime.now(ZoneInfo(tz))
     state["now_local"] = now_local_dt.isoformat()
@@ -131,16 +262,12 @@ def initial_node(state: State, config: RunnableConfig) -> State:
         if thread_id:
             state["session_id"] = thread_id
 
-    if state.get("profile_summary"):
-        return state
-
-    user_info = state.get("user_email")  # el frontend debe setearlo
-    if not user_info:
-        state["profile_summary"] = "ERROR: no se proporcionó user_info"
-        return state
-
-    summary = get_student_profile(user_info)
-    state["profile_summary"] = summary
+    # Si el usuario ya está identificado, cargar su perfil
+    if state.get("user_identified") and state.get("user_email"):
+        user_info = state.get("user_email")
+        summary = get_student_profile(user_info)
+        state["profile_summary"] = summary
+    
     return state
 
 def save_user_input(state: State):
@@ -252,44 +379,42 @@ class ToAgentLab(BaseModel):
 class ToAgentIndustrial(BaseModel):
     reason: str = Field(description="Motivo de transferencia al agente industrial.")
 
-agent_route_prompt = ChatPromptTemplate.from_messages([
-    ("system", """#MAIN GOAL
-Eres el ROUTER. Debes ELEGIR **EXACTAMENTE UN** agente mediante una **llamada de herramienta**
-( ToAgentEducation, ToAgentGeneral, ToAgentLab, ToAgentIndustrial ).
-**PROHIBIDO** responder texto normal al usuario.
-Perfil del usuario (contexto): {profile_summary}
-Fecha/hora: {now_human} | ISO: {now_local} | TZ: {tz}"""),
-    ("system", """#BEHAVIOUR
-Analiza el último mensaje del usuario y enruta según el contenido:
-
-- **EDUCATION → ToAgentEducation**: aprender/estudiar/explicar; tareas, exámenes, clases; estilo de aprendizaje; material didáctico.
-- **LAB → ToAgentLab**: laboratorio/robótica/instrumentación; sensores/cámaras/experimentos; RAG técnico; **NDA/confidencialidad/alcance de información**; integración técnica de proyectos.
-- **INDUSTRIAL → ToAgentIndustrial**: PLC/SCADA/OPC UA/HMI; robots; procesos/maquinaria industrial; ladder; Siemens/Allen-Bradley; integraciones OT.
-- **GENERAL → ToAgentGeneral**: coordinación/agenda; datos de partes (nombres, RFC, domicilios); saludos/small talk; soporte administrativo.
-
-## REGLAS
-1) Emite **solo una** tool call. Si detectas múltiples categorías, aplica **desempate**:
-   - Industrial vs Lab → **INDUSTRIAL** si hay PLC/SCADA/robots/OT; si hay **NDA/confidencialidad**, prioriza **LAB**.
-   - Lab vs Education → **LAB** si hay hardware/experimentos/RAG técnico o NDA; de lo contrario **EDUCATION**.
-   - Cualquier duda menor → elige la opción **más específica**; si es solo saludo/agenda → **GENERAL**.
-2) No formules preguntas ni des texto al usuario desde el router.
-3) Si el contenido es ruido o vacío, selecciona **GENERAL**.
-
-Devuelve únicamente la tool call apropiada."""),
-    ("placeholder", "{messages}")
-])
-
 # =========================
 # Grafo
 # =========================
 graph = StateGraph(State)
 
 graph.add_node("initial_node", initial_node)
+graph.add_node("identify_user", identify_user_node)
+graph.add_node("identification_tools", process_identification_tools)
 graph.add_node("save_user_input", save_user_input)
 graph.add_node("save_agent_output", save_agent_output)
 
 graph.set_entry_point("initial_node")
-graph.add_edge("initial_node", "save_user_input")
+graph.add_edge("initial_node", "identify_user")
+
+# Después del nodo de identificación, verificar el estado
+graph.add_conditional_edges(
+    "identify_user",
+    check_identification_status,
+    {
+        "identified": "save_user_input",
+        "tools": "identification_tools",
+        "await_user": END  # Terminar y esperar respuesta del usuario
+    }
+)
+
+# Después de ejecutar las herramientas de identificación, volver a verificar
+graph.add_conditional_edges(
+    "identification_tools",
+    check_after_identification_tools,
+    {
+        "identified": "save_user_input",
+        "continue_identifying": "identify_user",  # Volver a preguntar por más información
+        "await_user": END  # Terminar y esperar respuesta del usuario
+    }
+)
+
 graph.add_edge("save_user_input", "router")
 
 router_runnable = agent_route_prompt | llm.bind_tools(
