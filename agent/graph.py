@@ -223,7 +223,7 @@ def process_identification_tools(state: State):
         if email:
             student = _fetch_student(email)
             if student:
-                profile_summary = get_student_profile(email)
+                profile_summary = get_student_profile.invoke({"name_or_email": email})
                 confirmation_msg = AIMessage(
                     content=f"¡Perfecto, {student.get('full_name', 'usuario')}! Ya te tengo identificado. ¿En qué puedo ayudarte hoy?"
                 )
