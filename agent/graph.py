@@ -14,13 +14,12 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import locale
 
-from Settings.prompts import general_prompt, education_prompt, lab_prompt, industrial_prompt
+from Settings.prompts import general_prompt, education_prompt, lab_prompt, industrial_prompt, identification_prompt, agent_route_prompt
 from Settings.tools import (
     web_research, retrieve_context, update_student_goals, update_learning_style, route_to,
     current_datetime, _submit_chat_history, get_student_profile, check_user_exists, 
     register_new_student, update_student_info, _fetch_student
 )
-from helpers.fetch_user import get_student_profile
 
 # =========================
 # Estado del grafo
@@ -67,7 +66,6 @@ class State(TypedDict, total=False):
     session_id: Optional[str]
     awaiting_user_info: Optional[str]
 
-# (opcional) herramienta estructurada para cierre/escala
 class CompleteOrEscalate(BaseModel):
     reason: str = Field(description="Motivo para finalizar o escalar.")
     cancel: bool = Field(default=False, description="True=cierra; False=continúa/escalado.")
@@ -96,71 +94,22 @@ general_llm      = llm.bind_tools(GENERAL_TOOLS)
 education_llm    = llm.bind_tools(EDU_TOOLS)
 lab_llm          = llm.bind_tools(LAB_TOOLS)
 industrial_llm   = llm.bind_tools(IND_TOOLS)
+identification_llm = llm.bind_tools([check_user_exists, register_new_student, update_student_info])
 
 general_runnable     = general_prompt   | general_llm
 education_runnable   = education_prompt | education_llm
 lab_runnable         = lab_prompt       | lab_llm
 industrial_runnable  = industrial_prompt| industrial_llm
+identification_runnable = identification_prompt | identification_llm
 
 def general_agent_node(state: State):     return {"messages": general_runnable.invoke(state)}
 def education_agent_node(state: State):   return {"messages": education_runnable.invoke(state)}
 def lab_agent_node(state: State):         return {"messages": lab_runnable.invoke(state)}
 def industrial_agent_node(state: State):  return {"messages": industrial_runnable.invoke(state)}
 
-# =========================
-# Nodo de identificación de usuario
-# =========================
-identification_prompt = ChatPromptTemplate.from_messages([
-    ("system", """Eres un asistente que ayuda a identificar y registrar nuevos usuarios.
-
-FLUJO DE TRABAJO:
-1. Si aún no tienes el nombre completo y correo electrónico, pregúntalos
-2. Una vez tengas nombre y correo, usa check_user_exists para verificar si el usuario existe
-3. Si check_user_exists retorna "EXISTS:Nombre" → El usuario ya está registrado, confírmalo
-4. Si check_user_exists retorna "NOT_FOUND" → Pregunta por:
-   - Carrera (major) - string
-   - Habilidades (skills) - LISTA de strings, separadas por comas
-   - Metas académicas/profesionales (goals) - LISTA de strings, separadas por comas
-   - Intereses (interests) - LISTA de strings o string único
-5. Una vez tengas TODA la información, usa register_new_student para registrar al usuario
-
-FORMATO DE DATOS AL LLAMAR register_new_student:
-- skills: ["Python", "C++", "React"] <- SIEMPRE como lista
-- goals: ["Trabajar en Japón", "Ser líder técnico"] <- SIEMPRE como lista  
-- interests: ["Inteligencia Artificial", "Robótica"] <- SIEMPRE como lista o string único
-
-REGLAS IMPORTANTES:
-- NO uses register_new_student hasta tener: full_name, email, major, skills, goals, interests
-- skills, goals e interests DEBEN ser listas (arrays) en el tool call
-- Si el usuario da un solo interés, conviértelo en una lista de un elemento: ["item"]
-- Si falta algún dato, pregúntalo específicamente
-- Sé amigable y claro en tus preguntas
-
-Ejemplo de flujo:
-Usuario: "Hector Tovar A00840308@tec.mx"
-Tú: *usas check_user_exists* → "NOT_FOUND"
-Tú: "Gracias Hector. Veo que eres nuevo. Para crear tu perfil necesito algunos datos:
-- ¿Cuál es tu carrera?
-- ¿Qué habilidades técnicas tienes? (ej: Python, Java, etc.)
-- ¿Cuáles son tus metas académicas o profesionales?
-- ¿Qué temas te interesan?"
-
-Usuario: "Ingeniería en Robótica, Python/C++/React, Trabajar en Japón, Inteligencia Artificial"
-Tú: *usas register_new_student con:
-  major="Ingeniería en Robótica"
-  skills=["Python", "C++", "React"]
-  goals=["Trabajar en Japón"]
-  interests=["Inteligencia Artificial"]*"""),
-    ("placeholder", "{messages}")
-])
-
-identification_llm = llm.bind_tools([check_user_exists, register_new_student, update_student_info])
-identification_runnable = identification_prompt | identification_llm
-
 def identify_user_node(state: State):
     """
-    Nodo que gestiona la identificación del usuario.
-    Si el usuario no está identificado, pregunta por nombre y correo.
+    Identify the user by asking for their name and email if not already identified.
     """
     if state.get("user_identified"):
         return {}
@@ -187,7 +136,7 @@ def identify_user_node(state: State):
 
 def check_identification_status(state: State) -> Literal["identified", "tools", "await_user"]:
     """
-    Verifica si el usuario ya está identificado o si necesita usar herramientas.
+    Verify the user's identification status and decide the next step.
     """
     if not state.get("user_identified"):
         messages = state.get("messages", [])
@@ -209,7 +158,7 @@ def check_identification_status(state: State) -> Literal["identified", "tools", 
 
 def check_after_identification_tools(state: State) -> Literal["identified", "continue_identifying", "await_user"]:
     """
-    Después de ejecutar herramientas de identificación, decidir el siguiente paso.
+    After running identification tools, decide the next step.
     """
     messages = state.get("messages", [])
     if not messages:
@@ -237,7 +186,7 @@ def check_after_identification_tools(state: State) -> Literal["identified", "con
 
 def process_identification_tools(state: State):
     """
-    Procesa las herramientas de identificación y actualiza el estado del usuario.
+    Processes identification tools and updates the user's state.
     """
     from langchain_core.messages import AIMessage, ToolMessage
     
@@ -429,33 +378,6 @@ class ToAgentLab(BaseModel):
 
 class ToAgentIndustrial(BaseModel):
     reason: str = Field(description="Motivo de transferencia al agente industrial.")
-
-agent_route_prompt = ChatPromptTemplate.from_messages([
-    ("system", """#MAIN GOAL
-Eres el ROUTER. Debes ELEGIR **EXACTAMENTE UN** agente mediante una **llamada de herramienta**
-( ToAgentEducation, ToAgentGeneral, ToAgentLab, ToAgentIndustrial ).
-**PROHIBIDO** responder texto normal al usuario.
-Perfil del usuario (contexto): {profile_summary}
-Fecha/hora: {now_human} | ISO: {now_local} | TZ: {tz}"""),
-    ("system", """#BEHAVIOUR
-Analiza el último mensaje del usuario y enruta según el contenido:
-
-- **EDUCATION → ToAgentEducation**: aprender/estudiar/explicar; tareas, exámenes, clases; estilo de aprendizaje; material didáctico.
-- **LAB → ToAgentLab**: laboratorio/robótica/instrumentación; sensores/cámaras/experimentos; RAG técnico; **NDA/confidencialidad/alcance de información**; integración técnica de proyectos.
-- **INDUSTRIAL → ToAgentIndustrial**: PLC/SCADA/OPC UA/HMI; robots; procesos/maquinaria industrial; ladder; Siemens/Allen-Bradley; integraciones OT.
-- **GENERAL → ToAgentGeneral**: coordinación/agenda; datos de partes (nombres, RFC, domicilios); saludos/small talk; soporte administrativo.
-
-## REGLAS
-1) Emite **solo una** tool call. Si detectas múltiples categorías, aplica **desempate**:
-   - Industrial vs Lab → **INDUSTRIAL** si hay PLC/SCADA/robots/OT; si hay **NDA/confidencialidad**, prioriza **LAB**.
-   - Lab vs Education → **LAB** si hay hardware/experimentos/RAG técnico o NDA; de lo contrario **EDUCATION**.
-   - Cualquier duda menor → elige la opción **más específica**; si es solo saludo/agenda → **GENERAL**.
-2) No formules preguntas ni des texto al usuario desde el router.
-3) Si el contenido es ruido o vacío, selecciona **GENERAL**.
-
-Devuelve únicamente la tool call apropiada."""),
-    ("placeholder", "{messages}")
-])
 
 # =========================
 # Grafo

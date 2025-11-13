@@ -19,7 +19,7 @@ from Settings.state import State  # solo para tipado opcional
 
 # Constants
 now_mty = datetime.now(ZoneInfo("America/Monterrey"))
-timestamp_ms = int(now_mty.timestamp() * 1000)
+timestamp_iso = now_mty.isoformat()
 
 class WebResearchInput(BaseModel):
     query: str = Field(..., description="Pregunta o tema a investigar")
@@ -39,16 +39,41 @@ _tavily: Optional[TavilyClient] = TavilyClient(api_key=_TAVILY_KEY) if _TAVILY_K
 
 # =================== HELPERS ===================
 def _fetch_student(name_or_email: str):
-    """Busca un estudiante por email o nombre parcial en Supabase. Regresa dict o None."""
-    q = (name_or_email or "").strip()
-    if not q:
-        return None
+    """ Search for a student by email or partial name in Supabase. Returns dict or None. """
+    q = name_or_email.strip()
     if "@" in q:
         res = SB.table("students").select("*").eq("email", q).limit(1).execute()
     else:
         res = SB.table("students").select("*").ilike("full_name", f"%{q}%").limit(1).execute()
     rows = res.data or []
     return rows[0] if rows else None
+
+def get_student_profile(name_or_email: str) -> str:
+    """Summary: Fetches and formats a student's profile information."""
+    row = _fetch_student(name_or_email)
+    if not row:
+        return "PERFIL_NO_ENCONTRADO"
+    skills = ", ".join(row.get("skills", []) or [])
+    goals  = ", ".join(row.get("goals", []) or [])
+    intr   = ", ".join(row.get("interests", []) or [])
+    career  = row.get("career") or "N/D"
+    semester = row.get("semester")
+    full   = row.get("full_name") or name_or_email
+
+    ls = row.get("learning_style") or {}
+    prefs = []
+    if ls.get("prefers_examples"):    prefs.append("con ejemplos")
+    if ls.get("prefers_visual"):      prefs.append("de forma visual")
+    if ls.get("prefers_step_by_step"):prefs.append("paso a paso")
+    if ls.get("prefers_theory"):      prefs.append("con teoría")
+    if ls.get("prefers_practice"):    prefs.append("con práctica")
+    notes = ls.get("notes", "")
+    learning_desc = (f"Prefiere aprender {' y '.join(prefs)}. {notes}"
+                     if prefs else "No se ha definido su estilo de aprendizaje.")
+
+    return (f"Perfil de {full} — Carrera: {career}, Semestre: {semester}. "
+            f"Skills: {skills or 'N/D'}. Metas: {goals or 'N/D'}. "
+            f"Intereses: {intr or 'N/D'}. {learning_desc}")
 
 def _submit_chat_history(
     session_id: Union[int, str, UUID],
@@ -57,7 +82,7 @@ def _submit_chat_history(
     created_at: Optional[str] = None,
     user_id: Optional[str] = None,
 ):
-    """Guarda un mensaje en Supabase (app_user, chat_session, chat_message)."""
+    """Save in the db a chat message with session and user info."""
     if isinstance(session_id, UUID):
         session_id = str(session_id)
 
@@ -90,7 +115,7 @@ def _submit_chat_history(
         print(f"Error saving chat: {e}")
         raise
 
-def _submit_student(full_name: str, email: str, major: str, skills: List[str], goals: List[str], interests: Union[str, List[str]], last_seen: Union[int, str] = timestamp_ms, learning_style: dict = None):
+def _submit_student(full_name: str, email: str, career: str, semester: int, skills: List[str], goals: List[str], interests: Union[str, List[str]], last_seen: str = None, learning_style: dict = None):
     """Helper to insert student profile to Supabase if the agent doesnt know who the student is."""
     if learning_style is None:
         learning_style = {}
@@ -98,11 +123,16 @@ def _submit_student(full_name: str, email: str, major: str, skills: List[str], g
     if isinstance(interests, str):
         interests = [interests] if interests else []
     
+    # Si no se proporciona last_seen, usar la fecha/hora actual en formato ISO
+    if last_seen is None:
+        last_seen = datetime.now(ZoneInfo("America/Monterrey")).isoformat()
+    
     try:
         SB.table("students").upsert({
             "full_name": full_name,
             "email": email,
-            "major": major,
+            "career": career,
+            "semester": semester,
             "skills": skills,
             "goals": goals,
             "interests": interests,
@@ -250,7 +280,8 @@ def get_student_profile(name_or_email: str) -> str:
     skills = ", ".join(row.get("skills", []) or [])
     goals  = ", ".join(row.get("goals", []) or [])
     intr   = ", ".join(row.get("interests", []) or [])
-    major  = row.get("major") or "N/D"
+    career  = row.get("career") or "N/D"
+    semester = row.get("semester") or "N/D"
     full   = row.get("full_name") or name_or_email
 
     ls = row.get("learning_style") or {}
@@ -264,7 +295,7 @@ def get_student_profile(name_or_email: str) -> str:
     learning_desc = (f"Prefiere aprender {' y '.join(prefs)}. {notes}"
                      if prefs else "No se ha definido su estilo de aprendizaje.")
 
-    return (f"Perfil de {full} — Carrera: {major}. "
+    return (f"Perfil de {full} — Carrera: {career}, Semestre: {semester}. "
             f"Skills: {skills or 'N/D'}. Metas: {goals or 'N/D'}. "
             f"Intereses: {intr or 'N/D'}. {learning_desc}")
 
@@ -276,9 +307,9 @@ def submit_chat_history(session_id: int, role: Literal["student", "agent"], cont
     return "OK"
 
 @tool
-def submit_student_profile(full_name: str, email: str, major: str, skills: List[str], goals: List[str], interests: str, learning_style: dict = None) -> str:
+def submit_student_profile(full_name: str, email: str, career: str, semester: int, skills: List[str], goals: List[str], interests: str, learning_style: dict = None) -> str:
     """Insert or update the student profile."""
-    _submit_student(full_name, email, major, skills, goals, interests, learning_style=learning_style)
+    _submit_student(full_name, email, career, semester, skills, goals, interests, learning_style=learning_style)
     return "OK"
 
 @tool
@@ -402,8 +433,8 @@ def check_user_exists(email: str) -> str:
         return f"ERROR:{str(e)}"
 
 @tool
-def register_new_student(full_name: str, email: str, major: str = "", skills: List[str] = None, 
-                        goals: List[str] = None, interests: Union[str, List[str]] = None) -> str:
+def register_new_student(full_name: str, email: str, career: str = "", semester: int = 1, skills: List[str] = None, 
+                        goals: List[str] = None, interests: Union[str, List[str]] = None, learning_style: dict = None) -> str:
     """
     Register a new student in the database with the provided information.
     Returns: 'OK' on success or 'ERROR:message' on failure.
@@ -415,22 +446,25 @@ def register_new_student(full_name: str, email: str, major: str = "", skills: Li
             goals = []
         if interests is None:
             interests = []
+        if learning_style is None:
+            learning_style = {}
         
         _submit_student(
             full_name=full_name,
             email=email,
-            major=major,
+            career=career,
+            semester=semester,
             skills=skills,
             goals=goals,
             interests=interests,
-            learning_style={}
+            learning_style=learning_style
         )
         return "OK"
     except Exception as e:
         return f"ERROR:{str(e)}"
 
 @tool
-def update_student_info(email: str, major: str = None, skills: List[str] = None, 
+def update_student_info(email: str, career: str = None, semester: int = None, skills: List[str] = None, 
                         goals: List[str] = None, interests: Union[str, List[str]] = None) -> str:
     """
     Update an existing student's information in the database.
@@ -443,8 +477,10 @@ def update_student_info(email: str, major: str = None, skills: List[str] = None,
             return "ERROR:Usuario no encontrado"
         
         update_data = {}
-        if major is not None:
-            update_data["major"] = major
+        if career is not None:
+            update_data["career"] = career
+        if semester is not None:
+            update_data["semester"] = semester
         if skills is not None:
             update_data["skills"] = skills
         if goals is not None:
