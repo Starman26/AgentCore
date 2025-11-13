@@ -12,13 +12,22 @@ from langchain_core.tools import tool
 from pydantic.v1 import BaseModel, Field, conint
 from supabase import create_client, Client
 from tavily import TavilyClient
+from langchain_openai import ChatOpenAI
 
 from rag.rag_logic import create_or_update_vectorstore
 from Settings.state import State  # solo para tipado opcional
 
 # Constants
-now_utc = datetime.now(tz=timezone.utc)
-timestamp_ms = int(now_utc.timestamp() * 1000)
+now_mty = datetime.now(ZoneInfo("America/Monterrey"))
+timestamp_ms = int(now_mty.timestamp() * 1000)
+
+class WebResearchInput(BaseModel):
+    query: str = Field(..., description="Pregunta o tema a investigar")
+    depth: Literal["basic", "advanced"] = Field("advanced", description="Profundidad de búsqueda")
+    max_results: conint(ge=1, le=10) = 5
+    time_filter: Optional[Literal["d", "w", "m", "y"]] = Field(
+        None, description="Ventana temporal: d=día, w=semana, m=mes, y=año"
+    )
 
 # ------------------- CONFIGURACIÓN -------------------
 load_dotenv()
@@ -75,16 +84,114 @@ def _submit_chat_history(
         print(f"Error saving chat: {e}")
         raise
 
-# =================== TOOLS ===================
+def _submit_student(full_name: str, email: str, major: str, skills: List[str], goals: List[str], interests: str, last_seen: Union[int, str] = timestamp_ms, learning_style: dict = None):
+    """Helper to insert student profile to Supabase if the agent doesnt know who the student is."""
+    if learning_style is None:
+        learning_style = {}
+    try:
+        SB.table("students").insert({
+            "full_name": full_name,
+            "email": email,
+            "major": major,
+            "skills": skills,
+            "goals": goals,
+            "interests": interests,
+            "last_seen": last_seen,
+            "learning_style": learning_style
+        }, on_conflict="email").execute()
+    except Exception as e:
+        print(f"Error saving student profile: {e}")
+        raise
+    
+def _summarize_all_chats() -> dict:
+    """
+    Daily Process: collects all messages grouped by session_id,
+    """
+    
+    stats = {
+        "total_sessions": 0,
+        "successful": 0,
+        "failed": 0,
+        "session_ids": []
+    }
+    
+    try:
+        response = SB.table("chat_message").select("*").order("session_id").order("created_at").execute()
+        
+        all_messages = response.data or []
+        if not all_messages:
+            print("No messages to process")
+            return stats
+        
+        sessions_messages = {}
+        for msg in all_messages:
+            session_id = msg.get("session_id")
+            if session_id:
+                if session_id not in sessions_messages:
+                    sessions_messages[session_id] = []
+                sessions_messages[session_id].append(msg)
+        
+        stats["total_sessions"] = len(sessions_messages)
+        print(f"Processing {stats['total_sessions']} sessions...")
+        
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        
+        for session_id, messages in sessions_messages.items():
+            try:
+                conversation_text = []
+                for msg in messages:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    conversation_text.append(f"{role.upper()}: {content}")
+                
+                full_conversation = "\n\n".join(conversation_text)
+                
+                summary_prompt = f"""Genera un resumen conciso de la siguiente conversación entre un estudiante y un agente educativo.
+                El resumen debe capturar:
+                - Los temas principales discutidos
+                - Las preguntas clave del estudiante
+                - Las soluciones o respuestas proporcionadas
+                - Cualquier acción o tarea acordada
 
-# ---- Tool: Investigación Web (Tavily) ----
-class WebResearchInput(BaseModel):
-    query: str = Field(..., description="Pregunta o tema a investigar")
-    depth: Literal["basic", "advanced"] = Field("advanced", description="Profundidad de búsqueda")
-    max_results: conint(ge=1, le=10) = 5
-    time_filter: Optional[Literal["d", "w", "m", "y"]] = Field(
-        None, description="Ventana temporal: d=día, w=semana, m=mes, y=año"
-    )
+                Conversación:
+                {full_conversation}
+
+                Resumen en JSON:"""
+                
+                summary_response = llm.invoke(summary_prompt)
+                summary_json = summary_response.content
+
+                SB.table("chat_summary").upsert({
+                    "session_id": session_id,
+                    "summary_json": summary_json,
+                    "updated_at": now_mty
+                }, on_conflict="session_id").execute()
+                
+                stats["successful"] += 1
+                stats["session_ids"].append(session_id)
+                print(f"Summary created for session {session_id}")
+                
+            except Exception as e:
+                stats["failed"] += 1
+                print(f"Error summarizing session {session_id}: {e}")
+        
+        print(f"Completed: {stats['successful']}/{stats['total_sessions']}.")
+        
+        if stats["successful"] > 0:
+            try:
+                print(f"Deleting messages for {stats['successful']} sessions...")
+                for session_id in stats["session_ids"]:
+                    SB.table("chat_message").delete().eq("session_id", session_id).execute()
+                    print(f"Deleted messages for session {session_id}")
+                print("All messages deleted for summarized sessions.")
+            except Exception as e:
+                print(f"Error deleting messages: {e}")
+        
+        return stats
+        
+    except Exception as e:
+        print(f"Fatal error in _summarize_all_chats: {e}")
+        return stats
 
 def _summarize(snippets: List[dict], limit: int = 5) -> str:
     parts = []
@@ -97,6 +204,9 @@ def _summarize(snippets: List[dict], limit: int = 5) -> str:
         parts.append(f"[{i}] {title}\n{content}\nFuente: {url}")
     return "\n\n".join(parts)
 
+# =================== TOOLS ===================
+
+# ---- Tool: Investigación Web (Tavily) ----
 @tool("web_research", args_schema=WebResearchInput)
 def web_research(query: str, depth: str = "advanced", max_results: int = 5,
                  time_filter: Optional[str] = None) -> str:
@@ -155,7 +265,50 @@ def submit_chat_history(session_id: int, role: Literal["student", "agent"], cont
     _submit_chat_history(session_id, role, content, created_at)
     return "OK"
 
+@tool
+def submit_student_profile(full_name: str, email: str, major: str, skills: List[str], goals: List[str], interests: str, learning_style: dict = None) -> str:
+    """Insert or update the student profile."""
+    _submit_student(full_name, email, major, skills, goals, interests, learning_style=learning_style)
+    return "OK"
+
+@tool
+def identify_user_from_message(message: str) -> str:
+    """Attempts to identify the user by searching for an email or a name in the message.
+    
+    Returns a string with the format:
+    - 'FOUND:email:name' if a user is found
+    - 'NOT_FOUND' if no match is found
+    """
+    words = message.split()
+    
+    for word in words:
+        if "@" in word:
+            clean_email = word.strip(".,;:!?")
+            row = _fetch_student(clean_email)
+            if row:
+                return f"FOUND:{row.get('email')}:{row.get('full_name')}"
+    
+    for i in range(len(words) - 1):
+        if words[i] and words[i][0].isupper() and words[i+1] and words[i+1][0].isupper():
+            potential_name = f"{words[i]} {words[i+1]}"
+            row = _fetch_student(potential_name)
+            if row:
+                return f"FOUND:{row.get('email')}:{row.get('full_name')}"
+    
+    return "NOT_FOUND"
+
 # ---- Tools de actualización de perfil ----
+@tool
+def summarize_all_chats() -> str:
+    """
+    Daily process: generate summaries for ALL sessions.
+    Collects all messages grouped by session_id, generates a summary for each session
+    using an LLM, and saves/updates chat_summary.
+    Returns a brief statistics string.
+    """
+    stats = _summarize_all_chats()
+    return f"Processed {stats['successful']}/{stats['total_sessions']} sessions. Failed: {stats['failed']}"
+
 @tool
 def update_student_goals(name_or_email: str, new_goal: str) -> str:
     """Agrega una meta al perfil (JSONB)."""
@@ -226,5 +379,5 @@ def current_datetime(state: Optional[State] = None, tz: Optional[str] = None) ->
 
 # =================== TOOL SETS ===================
 LAB_TOOLS     = [retrieve_context, web_research, route_to]
-GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, web_research, route_to]
+GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, web_research, route_to, summarize_chat, summarize_all_chats]
 EDU_TOOLS     = [get_student_profile, update_learning_style, web_research, route_to]
