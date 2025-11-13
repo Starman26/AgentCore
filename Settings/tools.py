@@ -379,5 +379,5 @@ def current_datetime(state: Optional[State] = None, tz: Optional[str] = None) ->
 
 # =================== TOOL SETS ===================
 LAB_TOOLS     = [retrieve_context, web_research, route_to]
-GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, web_research, route_to, summarize_chat, summarize_all_chats]
+GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, web_research, route_to, summarize_all_chats]
 EDU_TOOLS     = [get_student_profile, update_learning_style, web_research, route_to]
