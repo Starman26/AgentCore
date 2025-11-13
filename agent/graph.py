@@ -2,8 +2,6 @@ from typing_extensions import TypedDict
 from typing import Annotated, Literal
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langgraph.graph.message import AnyMessage, add_messages
 from pydantic.v1 import BaseModel, Field
 from langchain_core.tools import tool
 from langgraph.prebuilt import tools_condition, ToolNode
@@ -12,7 +10,7 @@ import os
 
 from Settings.prompts import intent_prompt, general_prompt, education_prompt, lab_prompt, industrial_prompt
 from Settings.tools import retrieve_context,get_student_profile, update_student_goals, update_learning_style, route_to
-from Settings.state import State, SupervisorOutput 
+from Settings.state import State
 
 GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, route_to]
 LAB_TOOLS     = [retrieve_context, route_to]

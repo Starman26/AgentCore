@@ -1,20 +1,11 @@
 import os
 from langchain_core.tools import tool
 from supabase import create_client, Client
-from rag.rag_logic import create_or_update_vectorstore
-from typing import Dict, Any, List
+from rag.rag_logic import general_chat_db_use, general_student_db_use
+from rag.db_access import _fetch_student
 
 # -------- Supabase client (una sola instancia) --------
 SB: Client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-
-def _fetch_student(name_or_email: str):
-    q = name_or_email.strip()
-    if "@" in q:
-        res = SB.table("students").select("*").eq("email", q).limit(1).execute()
-    else:
-        res = SB.table("students").select("*").ilike("full_name", f"%{q}%").limit(1).execute()
-    rows = res.data or []
-    return rows[0] if rows else None
 
 # -------- Tools de perfil de estudiante --------
 @tool
@@ -75,17 +66,26 @@ def update_learning_style(name_or_email: str, style: str) -> str:
 
 # -------- Tool RAG (incidentes/robots) --------
 @tool
-def retrieve_context(query: str) -> str:
+def retrieve_context(name_or_email : str, chat_id : int, query: str) -> str:
     """Busca en la base vectorial de robots/incidentes y devuelve pasajes."""
-    vectorstore = create_or_update_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-    docs = retriever.invoke(query)
+    student_vectorstore = general_student_db_use(name_or_email)
+    student_retriever = student_vectorstore.as_retriever(search_kwargs={"k": 2})
+    student_docs = student_retriever.invoke(query)
+    
+    chat_vectorstore = general_chat_db_use(chat_id)
+    chat_retriever = chat_vectorstore.as_retriever(search_kwargs={"k": 2})
+    chat_docs = chat_retriever.invoke(query)
+
     out = []
-    for d in docs:
+    for d in student_docs:
         m = d.metadata
         out.append(
-            f" {m.get('created_at')} |  {m.get('robot_type')} |  {m.get('problem_title')} |  {m.get('author')}\n"
-            f"{d.page_content}\n"
+            f"[STUDENT] {m.get('full_name')} | {m.get('email')}\n{d.page_content}\n"
+        )
+    for d in chat_docs:
+        m = d.metadata
+        out.append(
+            f"[CHAT] {m.get('session_id')} | {m.get('updated_at')}\n{d.page_content}\n"
         )
     return "\n".join(out)
 
