@@ -343,31 +343,53 @@ def update_learning_style(name_or_email: str, style: str) -> str:
 @tool
 def retrieve_context(name_or_email : str, chat_id : int, query: str) -> str:
     """Busca en la base vectorial de robots/incidentes y devuelve pasajes."""
+    print(f"RETRIEVE_CONTEXT: name={name_or_email}, chat_id={chat_id}, query={query}")
+    
+    # Verificar que el estudiante existe ANTES de crear vectorstore
+    student_row = _fetch_student(name_or_email)
+    if not student_row:
+        print(f"Estudiante '{name_or_email}' no encontrado en DB")
+        return "RAG_EMPTY"
+    
+    print(f"Estudiante encontrado: {student_row.get('full_name')} | {student_row.get('email')}")
+    
+    # Crear vectorstore SOLO para este estudiante específico
     student_vectorstore = general_student_db_use(name_or_email)
     student_retriever = student_vectorstore.as_retriever(search_kwargs={"k": 2})
     student_docs = student_retriever.invoke(query)
     
+    # Chat vectorstore
     chat_vectorstore = general_chat_db_use(chat_id)
     chat_retriever = chat_vectorstore.as_retriever(search_kwargs={"k": 2})
     chat_docs = chat_retriever.invoke(query)
 
     out = []
+    
+    # FILTRAR: Solo agregar docs que pertenezcan al estudiante correcto
     for d in student_docs:
         m = d.metadata
-        out.append(
-            f"[STUDENT] {m.get('full_name')} | {m.get('email')}\n{d.page_content}\n"
-        )
+        doc_name = m.get('full_name', '').lower()
+        doc_email = m.get('email', '').lower()
+        search_name = name_or_email.lower()
+        
+        # Solo incluir si el documento pertenece al estudiante buscado
+        if search_name in doc_name or search_name in doc_email or doc_email in search_name:
+            out.append(
+                f"[STUDENT] {m.get('full_name')} | {m.get('email')}\n{d.page_content}\n"
+            )
+        else:
+            print(f"Documento pertenece a {doc_name}, buscando {search_name}")
+    
     for d in chat_docs:
         m = d.metadata
         out.append(
             f"[CHAT] {m.get('session_id')} | {m.get('updated_at')}\n"
             f"{d.page_content}\n"
         )
-    return "\n".join(out) if out else "RAG_EMPTY"
-
-LAB_TOOLS       = [retrieve_context]
-GENERAL_TOOLS   = [get_student_profile, update_student_goals, update_learning_style]
-EDU_TOOLS       = [get_student_profile, update_learning_style]
+    
+    result = "\n".join(out) if out else "RAG_EMPTY"
+    print(f"{len(out)} documentos encontrados para {name_or_email}")
+    return result
 
 # ---- Tool de ruteo interno entre agentes ----
 @tool
