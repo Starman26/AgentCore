@@ -17,7 +17,8 @@ import locale
 from Settings.prompts import general_prompt, education_prompt, lab_prompt, industrial_prompt
 from Settings.tools import (
     web_research, retrieve_context, update_student_goals, update_learning_style, route_to,
-    current_datetime, _submit_chat_history, get_student_profile
+    current_datetime, _submit_chat_history, get_student_profile, check_user_exists, 
+    register_new_student, update_student_info, _fetch_student
 )
 from helpers.fetch_user import get_student_profile
 
@@ -60,9 +61,11 @@ class State(TypedDict, total=False):
         ],
         update_current_agent_stack
     ]
-    # Identidad de usuario (inyectada por el frontend)
+    user_identified: Optional[bool]
     user_email: Optional[str]
+    user_name: Optional[str]
     session_id: Optional[str]
+    awaiting_user_info: Optional[str]
 
 # (opcional) herramienta estructurada para cierre/escala
 class CompleteOrEscalate(BaseModel):
@@ -86,7 +89,6 @@ EDU_TOOLS       = [CompleteOrEscalate, web_research, update_learning_style, curr
 LAB_TOOLS       = [CompleteOrEscalate, web_research, retrieve_context, current_datetime]
 IND_TOOLS       = [CompleteOrEscalate, web_research, current_datetime]
 
-
 # =========================
 # Runnables por agente
 # =========================
@@ -106,6 +108,187 @@ def lab_agent_node(state: State):         return {"messages": lab_runnable.invok
 def industrial_agent_node(state: State):  return {"messages": industrial_runnable.invoke(state)}
 
 # =========================
+# Nodo de identificación de usuario
+# =========================
+identification_prompt = ChatPromptTemplate.from_messages([
+    ("system", """Eres un asistente que ayuda a identificar y registrar nuevos usuarios.
+
+FLUJO DE TRABAJO:
+1. Si aún no tienes el nombre completo y correo electrónico, pregúntalos
+2. Una vez tengas nombre y correo, usa check_user_exists para verificar si el usuario existe
+3. Si check_user_exists retorna "EXISTS:Nombre" → El usuario ya está registrado, confírmalo
+4. Si check_user_exists retorna "NOT_FOUND" → Pregunta por:
+   - Carrera (major) - string
+   - Habilidades (skills) - LISTA de strings, separadas por comas
+   - Metas académicas/profesionales (goals) - LISTA de strings, separadas por comas
+   - Intereses (interests) - LISTA de strings o string único
+5. Una vez tengas TODA la información, usa register_new_student para registrar al usuario
+
+FORMATO DE DATOS AL LLAMAR register_new_student:
+- skills: ["Python", "C++", "React"] <- SIEMPRE como lista
+- goals: ["Trabajar en Japón", "Ser líder técnico"] <- SIEMPRE como lista  
+- interests: ["Inteligencia Artificial", "Robótica"] <- SIEMPRE como lista o string único
+
+REGLAS IMPORTANTES:
+- NO uses register_new_student hasta tener: full_name, email, major, skills, goals, interests
+- skills, goals e interests DEBEN ser listas (arrays) en el tool call
+- Si el usuario da un solo interés, conviértelo en una lista de un elemento: ["item"]
+- Si falta algún dato, pregúntalo específicamente
+- Sé amigable y claro en tus preguntas
+
+Ejemplo de flujo:
+Usuario: "Hector Tovar A00840308@tec.mx"
+Tú: *usas check_user_exists* → "NOT_FOUND"
+Tú: "Gracias Hector. Veo que eres nuevo. Para crear tu perfil necesito algunos datos:
+- ¿Cuál es tu carrera?
+- ¿Qué habilidades técnicas tienes? (ej: Python, Java, etc.)
+- ¿Cuáles son tus metas académicas o profesionales?
+- ¿Qué temas te interesan?"
+
+Usuario: "Ingeniería en Robótica, Python/C++/React, Trabajar en Japón, Inteligencia Artificial"
+Tú: *usas register_new_student con:
+  major="Ingeniería en Robótica"
+  skills=["Python", "C++", "React"]
+  goals=["Trabajar en Japón"]
+  interests=["Inteligencia Artificial"]*"""),
+    ("placeholder", "{messages}")
+])
+
+identification_llm = llm.bind_tools([check_user_exists, register_new_student, update_student_info])
+identification_runnable = identification_prompt | identification_llm
+
+def identify_user_node(state: State):
+    """
+    Nodo que gestiona la identificación del usuario.
+    Si el usuario no está identificado, pregunta por nombre y correo.
+    """
+    if state.get("user_identified"):
+        return {}
+    
+    messages = state.get("messages", [])
+    has_asked_for_info = False
+    for msg in messages:
+        if hasattr(msg, 'type') and msg.type == 'ai':
+            content = getattr(msg, 'content', '')
+            if ('nombre' in content.lower() and 'correo' in content.lower()) or \
+               ('carrera' in content.lower() or 'habilidades' in content.lower()):
+                has_asked_for_info = True
+                break
+    
+    if not has_asked_for_info:
+        from langchain_core.messages import AIMessage
+        return {
+            "messages": [AIMessage(content="¡Hola! Para poder ayudarte mejor, necesito conocerte primero. ¿Podrías decirme tu nombre completo y correo electrónico?")],
+            "awaiting_user_info": "name_email"
+        }
+    
+    result = identification_runnable.invoke(state)
+    return {"messages": result}
+
+def check_identification_status(state: State) -> Literal["identified", "tools", "await_user"]:
+    """
+    Verifica si el usuario ya está identificado o si necesita usar herramientas.
+    """
+    if not state.get("user_identified"):
+        messages = state.get("messages", [])
+        if messages and hasattr(messages[-1], "tool_calls") and messages[-1].tool_calls:
+            return "tools"
+        
+        if messages and hasattr(messages[-1], "type") and messages[-1].type == "ai":
+            return "await_user"
+        
+        return "await_user"
+    
+    messages = state.get("messages", [])
+    if messages and hasattr(messages[-1], "type") and messages[-1].type == "ai":
+        last_content = getattr(messages[-1], "content", "")
+        if "Ya te tengo identificado" in last_content or "¿En qué puedo ayudarte" in last_content:
+            return "await_user"
+    
+    return "identified"
+
+def check_after_identification_tools(state: State) -> Literal["identified", "continue_identifying", "await_user"]:
+    """
+    Después de ejecutar herramientas de identificación, decidir el siguiente paso.
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return "await_user"
+    
+    if state.get("user_identified"):
+        last_msg = messages[-1]
+        if hasattr(last_msg, "type") and last_msg.type == "ai":
+            content = getattr(last_msg, "content", "")
+            if "Ya te tengo identificado" in content or "¿En qué puedo ayudarte" in content:
+                return "await_user"
+        return "identified"
+    
+    last_msg = messages[-1]
+    if hasattr(last_msg, "content") and last_msg.content == "NOT_FOUND":
+        return "continue_identifying"
+    
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        return "continue_identifying"
+    
+    if hasattr(last_msg, "type") and last_msg.type == "ai":
+        return "await_user"
+    
+    return "continue_identifying"
+
+def process_identification_tools(state: State):
+    """
+    Procesa las herramientas de identificación y actualiza el estado del usuario.
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+    
+    messages = state.get("messages", [])
+    if not messages or not hasattr(messages[-1], "tool_calls") or not messages[-1].tool_calls:
+        return {}
+    
+    tool_call = messages[-1].tool_calls[0]
+    tool_name = tool_call["name"]
+    tool_args = tool_call.get("args", {})
+    tool_call_id = tool_call["id"]
+    
+    result_content = ""
+    email = None
+    full_name = None
+    
+    try:
+        if tool_name == "check_user_exists":
+            email = tool_args.get("email", "")
+            result_content = check_user_exists.invoke({"email": email})
+        elif tool_name == "register_new_student":
+            email = tool_args.get("email", "")
+            full_name = tool_args.get("full_name", "")
+            result_content = register_new_student.invoke(tool_args)
+        elif tool_name == "update_student_info":
+            email = tool_args.get("email", "")
+            result_content = update_student_info.invoke(tool_args)
+    except Exception as e:
+        result_content = f"ERROR:{str(e)}"
+    
+    tool_message = ToolMessage(content=result_content, tool_call_id=tool_call_id)
+    
+    if result_content == "OK" or "EXISTS:" in result_content:
+        if email:
+            student = _fetch_student(email)
+            if student:
+                profile_summary = get_student_profile(email)
+                confirmation_msg = AIMessage(
+                    content=f"¡Perfecto, {student.get('full_name', 'usuario')}! Ya te tengo identificado. ¿En qué puedo ayudarte hoy?"
+                )
+                return {
+                    "messages": [tool_message, confirmation_msg],
+                    "user_identified": True,
+                    "user_email": email,
+                    "user_name": student.get('full_name', ''),
+                    "profile_summary": profile_summary,
+                    "awaiting_user_info": None
+                }
+    return {"messages": [tool_message]}
+
+# =========================
 # Nodo inicial: perfil + fecha/hora
 # =========================
 def _inject_time_fields(state: State) -> None:
@@ -114,7 +297,6 @@ def _inject_time_fields(state: State) -> None:
     try:
         locale.setlocale(locale.LC_TIME, "es_MX.UTF-8")
     except Exception:
-        # Si no existe el locale en el SO, seguimos con nombres en inglés
         pass
     now_local_dt = datetime.now(ZoneInfo(tz))
     state["now_local"] = now_local_dt.isoformat()
@@ -131,16 +313,12 @@ def initial_node(state: State, config: RunnableConfig) -> State:
         if thread_id:
             state["session_id"] = thread_id
 
-    if state.get("profile_summary"):
-        return state
-
-    user_info = state.get("user_email")  # el frontend debe setearlo
-    if not user_info:
-        state["profile_summary"] = "ERROR: no se proporcionó user_info"
-        return state
-
-    summary = get_student_profile(user_info)
-    state["profile_summary"] = summary
+    # Si el usuario ya está identificado, cargar su perfil
+    if state.get("user_identified") and state.get("user_email"):
+        user_info = state.get("user_email")
+        summary = get_student_profile(user_info)
+        state["profile_summary"] = summary
+    
     return state
 
 def save_user_input(state: State):
@@ -285,11 +463,36 @@ Devuelve únicamente la tool call apropiada."""),
 graph = StateGraph(State)
 
 graph.add_node("initial_node", initial_node)
+graph.add_node("identify_user", identify_user_node)
+graph.add_node("identification_tools", process_identification_tools)
 graph.add_node("save_user_input", save_user_input)
 graph.add_node("save_agent_output", save_agent_output)
 
 graph.set_entry_point("initial_node")
-graph.add_edge("initial_node", "save_user_input")
+graph.add_edge("initial_node", "identify_user")
+
+# Después del nodo de identificación, verificar el estado
+graph.add_conditional_edges(
+    "identify_user",
+    check_identification_status,
+    {
+        "identified": "save_user_input",
+        "tools": "identification_tools",
+        "await_user": END  # Terminar y esperar respuesta del usuario
+    }
+)
+
+# Después de ejecutar las herramientas de identificación, volver a verificar
+graph.add_conditional_edges(
+    "identification_tools",
+    check_after_identification_tools,
+    {
+        "identified": "save_user_input",
+        "continue_identifying": "identify_user",  # Volver a preguntar por más información
+        "await_user": END  # Terminar y esperar respuesta del usuario
+    }
+)
+
 graph.add_edge("save_user_input", "router")
 
 router_runnable = agent_route_prompt | llm.bind_tools(

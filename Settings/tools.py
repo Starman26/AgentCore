@@ -62,7 +62,13 @@ def _submit_chat_history(
         session_id = str(session_id)
 
     created_at = created_at or datetime.now(tz=timezone.utc).isoformat()
-    user_id = user_id or "00000000-0000-0000-0000-000000000000"
+    
+    if user_id and "@" in user_id:
+        import hashlib
+        from uuid import uuid5, NAMESPACE_DNS
+        user_id = str(uuid5(NAMESPACE_DNS, user_id))
+    elif not user_id:
+        user_id = "00000000-0000-0000-0000-000000000000"
 
     try:
         # upsert usuario y sesión
@@ -84,12 +90,16 @@ def _submit_chat_history(
         print(f"Error saving chat: {e}")
         raise
 
-def _submit_student(full_name: str, email: str, major: str, skills: List[str], goals: List[str], interests: str, last_seen: Union[int, str] = timestamp_ms, learning_style: dict = None):
+def _submit_student(full_name: str, email: str, major: str, skills: List[str], goals: List[str], interests: Union[str, List[str]], last_seen: Union[int, str] = timestamp_ms, learning_style: dict = None):
     """Helper to insert student profile to Supabase if the agent doesnt know who the student is."""
     if learning_style is None:
         learning_style = {}
+    
+    if isinstance(interests, str):
+        interests = [interests] if interests else []
+    
     try:
-        SB.table("students").insert({
+        SB.table("students").upsert({
             "full_name": full_name,
             "email": email,
             "major": major,
@@ -354,18 +364,17 @@ def retrieve_context(query: str) -> str:
         )
     return "\n".join(out) if out else "RAG_EMPTY"
 
-# ---- Tool de ruteo interno entre agentes ----
 @tool
 def route_to(target: str) -> str:
-    """Traspaso interno entre agentes. Valores: EDUCATION|LAB|INDUSTRIAL|GENERAL."""
+    """Internal handoff between agents. Values: EDUCATION|LAB|INDUSTRIAL|GENERAL."""
     return f"ROUTE::{(target or '').upper()}"
 
-# ---- Tool de fecha/hora actual (con state opcional) ----
+# ---- Current date/time tool (optional state) ----
 @tool
 def current_datetime(state: Optional[State] = None, tz: Optional[str] = None) -> str:
     """
-    Devuelve la fecha/hora actual en la zona 'tz' (o state.tz o America/Monterrey)
-    en tres formatos: ISO local, ISO UTC y humano en español.
+    Returns the current date/time in the 'tz' zone (or state.tz or America/Monterrey)
+    in three formats: local ISO, UTC ISO and a human-readable Spanish format.
     """
     tz_name = tz or (state.get("tz") if isinstance(state, dict) else None) or "America/Monterrey"
     now_loc = datetime.now(ZoneInfo(tz_name))
@@ -377,7 +386,81 @@ def current_datetime(state: Optional[State] = None, tz: Optional[str] = None) ->
     }
     return str(out)
 
+# ---- User identification tools ----
+@tool
+def check_user_exists(email: str) -> str:
+    """
+    Check if a user exists in the database by email.
+    Returns: 'EXISTS:full_name' if the user is found, otherwise 'NOT_FOUND'.
+    """
+    try:
+        row = _fetch_student(email)
+        if row:
+            return f"EXISTS:{row.get('full_name', 'Usuario')}"
+        return "NOT_FOUND"
+    except Exception as e:
+        return f"ERROR:{str(e)}"
+
+@tool
+def register_new_student(full_name: str, email: str, major: str = "", skills: List[str] = None, 
+                        goals: List[str] = None, interests: Union[str, List[str]] = None) -> str:
+    """
+    Register a new student in the database with the provided information.
+    Returns: 'OK' on success or 'ERROR:message' on failure.
+    """
+    try:
+        if skills is None:
+            skills = []
+        if goals is None:
+            goals = []
+        if interests is None:
+            interests = []
+        
+        _submit_student(
+            full_name=full_name,
+            email=email,
+            major=major,
+            skills=skills,
+            goals=goals,
+            interests=interests,
+            learning_style={}
+        )
+        return "OK"
+    except Exception as e:
+        return f"ERROR:{str(e)}"
+
+@tool
+def update_student_info(email: str, major: str = None, skills: List[str] = None, 
+                        goals: List[str] = None, interests: Union[str, List[str]] = None) -> str:
+    """
+    Update an existing student's information in the database.
+    Only fields that are not None will be updated.
+    Returns: 'OK' on success or 'ERROR:message' on failure.
+    """
+    try:
+        row = _fetch_student(email)
+        if not row:
+            return "ERROR:Usuario no encontrado"
+        
+        update_data = {}
+        if major is not None:
+            update_data["major"] = major
+        if skills is not None:
+            update_data["skills"] = skills
+        if goals is not None:
+            update_data["goals"] = goals
+        if interests is not None:
+            update_data["interests"] = interests
+        
+        if update_data:
+            SB.table("students").update(update_data).eq("email", email).execute()
+        
+        return "OK"
+    except Exception as e:
+        return f"ERROR:{str(e)}"
+
 # =================== TOOL SETS ===================
 LAB_TOOLS     = [retrieve_context, web_research, route_to]
-GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, web_research, route_to, summarize_chat, summarize_all_chats]
+GENERAL_TOOLS = [get_student_profile, update_student_goals, update_learning_style, web_research, route_to, summarize_all_chats]
 EDU_TOOLS     = [get_student_profile, update_learning_style, web_research, route_to]
+IDENTIFICATION_TOOLS = [check_user_exists, register_new_student, update_student_info]
