@@ -90,16 +90,16 @@ IND_TOOLS       = [CompleteOrEscalate, web_research, current_datetime]
 # =========================
 # Runnables por agente
 # =========================
-general_llm      = llm.bind_tools(GENERAL_TOOLS)
-education_llm    = llm.bind_tools(EDU_TOOLS)
-lab_llm          = llm.bind_tools(LAB_TOOLS)
-industrial_llm   = llm.bind_tools(IND_TOOLS)
+general_llm        = llm.bind_tools(GENERAL_TOOLS)
+education_llm      = llm.bind_tools(EDU_TOOLS)
+lab_llm            = llm.bind_tools(LAB_TOOLS)
+industrial_llm     = llm.bind_tools(IND_TOOLS)
 identification_llm = llm.bind_tools([check_user_exists, register_new_student, update_student_info])
 
-general_runnable     = general_prompt   | general_llm
-education_runnable   = education_prompt | education_llm
-lab_runnable         = lab_prompt       | lab_llm
-industrial_runnable  = industrial_prompt| industrial_llm
+general_runnable        = general_prompt    | general_llm
+education_runnable      = education_prompt  | education_llm
+lab_runnable            = lab_prompt        | lab_llm
+industrial_runnable     = industrial_prompt | industrial_llm
 identification_runnable = identification_prompt | identification_llm
 
 def general_agent_node(state: State):     return {"messages": general_runnable.invoke(state)}
@@ -265,7 +265,7 @@ def initial_node(state: State, config: RunnableConfig) -> State:
     # Si el usuario ya está identificado, cargar su perfil
     if state.get("user_identified") and state.get("user_email"):
         user_info = state.get("user_email")
-        summary = get_student_profile(user_info)
+        summary = get_student_profile.invoke({"name_or_email": user_info})
         state["profile_summary"] = summary
     
     return state
@@ -470,7 +470,7 @@ graph.add_edge("ToAgentIndustrial", "industrial_agent_node")
 from langgraph.prebuilt import ToolNode, tools_condition
 
 tools_node = ToolNode(
-    tools=[web_research, retrieve_context, update_student_goals, update_learning_style, route_to,current_datetime]
+    tools=[web_research, retrieve_context, update_student_goals, update_learning_style, route_to, current_datetime]
 )
 graph.add_node("tools", tools_node)
 
