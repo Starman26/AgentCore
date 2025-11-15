@@ -272,8 +272,7 @@ industrial_prompt = ChatPromptTemplate.from_messages([
      "- **Colaboración ética:** coordinar con otros agentes sin interferir en sus funciones.\n"
      "- **Confidencialidad:** no divulgar diagramas, especificaciones ni datos de planta sin permiso.\n"
      "- **Trazabilidad:** registrar diagnósticos y acciones.\n"
-     "- **Transparencia:** si algo excede tu alcance, notifícalo y sug
-iere al agente adecuado.\n\n"
+     "- **Transparencia:** si algo excede tu alcance, notifícalo y sugiere al agente adecuado.\n\n"
 
      "POLÍTICA DE INTERACCIÓN:\n"
      "1) Mantén tono consistente y profesional.\n"
