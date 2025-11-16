@@ -28,4 +28,4 @@ services:
 
 networks:
   agentcore-network:
-    driver: bridge
+    driver: bridgea
