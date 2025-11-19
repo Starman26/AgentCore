@@ -6,16 +6,16 @@ Prerequisites
 - A Dockerfile in the current directory
 - A secret file (e.g. `.env` or `secret.txt`)
 
-Build
+Build Compose
 ```sh
-docker build -t agentcore:latest -f docker/dockerfile .
+cd docker; docker-compose up --build
 ```
 
 Run using an environment file
 1. Create `.env` (e.g. `SECRET_KEY=...`)
 2. Run:
 ```sh
-docker run -p 8000:8000 --env-file .env agentcore
+docker run -p 8123:8123 --env-file .env agentcore
 ```
 
 That's all.
