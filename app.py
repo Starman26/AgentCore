@@ -54,9 +54,13 @@ async def root():
         "message": "AgentCore API is running",
         "version": "1.0.0",
         "endpoints": {
-            "chat": "/chat",
-            "upload": "/upload",
+            "message": "/message?mensaje=tu_mensaje (GET - Simple)",
+            "chat": "/chat (POST - Completo)",
+            "upload": "/upload (POST)",
             "health": "/health"
+        },
+        "examples": {
+            "simple_message": "http://localhost:8000/message?mensaje=Hola como estas"
         }
     }
 
@@ -68,31 +72,30 @@ async def health_check():
         "timestamp": datetime.now().isoformat()
     }
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+@app.get("/message")
+async def simple_message(mensaje: str):
     """
-    Endpoint to send messages to the agent and receive responses.
-    
+    Simple endpoint to send messages via query parameters.
+
+    Example: http://localhost:8000/message?mensaje=Hello%20how%20are%20you
+
     Args:
-        request: Object with the message, optional session_id, optional email, and timezone
-    
+        mensaje: The message to send
+
     Returns:
-        Agent's response with text
+        Agent's response in a simple format
     """
     try:
-        session_id = request.session_id or str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
+        timezone = "America/Monterrey"
         
         config = {"configurable": {"thread_id": session_id}}
         
         initial_state: State = {
-            "messages": [HumanMessage(content=request.message)],
-            "tz": request.timezone,
+            "messages": [HumanMessage(content=mensaje)],
+            "tz": timezone,
             "session_id": session_id
         }
-        
-        if request.user_email:
-            initial_state["user_email"] = request.user_email
-            initial_state["user_identified"] = True
         
         result = compiled_graph.invoke(initial_state, config)
         
@@ -107,12 +110,10 @@ async def chat(request: ChatRequest):
         if not agent_response:
             agent_response = "Sorry, I couldn't process your message. Please try again."
         
-        return ChatResponse(
-            response=agent_response,
-            session_id=session_id,
-            user_identified=result.get("user_identified", False),
-            timestamp=datetime.now().isoformat()
-        )
+        return {
+            "response": agent_response,
+            "session_id": session_id
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing the message: {str(e)}")
