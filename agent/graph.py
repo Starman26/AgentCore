@@ -265,7 +265,7 @@ def initial_node(state: State, config: RunnableConfig) -> State:
     # Si el usuario ya está identificado, cargar su perfil
     if state.get("user_identified") and state.get("user_email"):
         user_info = state.get("user_email")
-        summary = get_student_profile(user_info)
+        summary = get_student_profile.invoke({"name_or_email": user_info})
         state["profile_summary"] = summary
     
     return state

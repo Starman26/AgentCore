@@ -9,6 +9,7 @@ services:
     container_name: agentcore-agent
     ports:
       - "8123:8123"
+      - "8000:8000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - SUPABASE_URL=${SUPABASE_URL:-}
@@ -16,10 +17,11 @@ services:
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
     volumes:
       - ../robot_vector_db:/app/robot_vector_db
+      - ../uploads:/app/uploads
       - ../.env:/app/.env:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8123/ok"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3

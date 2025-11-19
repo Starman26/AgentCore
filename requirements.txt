@@ -11,3 +11,6 @@ chromadb
 supabase
 langchain-community
 tavily-python
+fastapi
+uvicorn[standard]
+python-multipart

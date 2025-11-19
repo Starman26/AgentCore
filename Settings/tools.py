@@ -48,8 +48,9 @@ def _fetch_student(name_or_email: str):
     rows = res.data or []
     return rows[0] if rows else None
 
+@tool
 def get_student_profile(name_or_email: str) -> str:
-    """Summary: Fetches and formats a student's profile information."""
+    """Fetches and formats a student's profile information from the database by email or name."""
     row = _fetch_student(name_or_email)
     if not row:
         return "PERFIL_NO_ENCONTRADO"
