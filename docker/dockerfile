@@ -24,7 +24,6 @@ COPY rag/ ./rag/
 COPY helpers/ ./helpers/
 COPY Settings/ ./Settings/
 COPY app.py ./
-COPY run_server.py ./
 COPY langgraph.json ./
 COPY .env* ./
 
@@ -33,8 +32,10 @@ RUN mkdir -p uploads
 
 COPY --chown=root:root robot_vector_db/ ./robot_vector_db/
 
+COPY start.sh ./start.sh
+RUN chmod +x start.sh
+
 EXPOSE 8123
 EXPOSE 8000
 
-# Comando para ejecutar el servidor FastAPI
-CMD ["python", "run_server.py"]
+CMD ["./start.sh"]
