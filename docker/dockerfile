@@ -1,0 +1,41 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+COPY agent/ ./agent/
+COPY rag/ ./rag/
+COPY helpers/ ./helpers/
+COPY Settings/ ./Settings/
+COPY app.py ./
+COPY langgraph.json ./
+COPY .env* ./
+
+RUN mkdir -p robot_vector_db
+RUN mkdir -p uploads
+
+COPY --chown=root:root robot_vector_db/ ./robot_vector_db/
+
+COPY start.sh ./start.sh
+RUN chmod +x start.sh
+
+EXPOSE 8123
+EXPOSE 8000
+
+CMD ["./start.sh"]
