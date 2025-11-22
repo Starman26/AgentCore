@@ -3,7 +3,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.documents import Document
 from langchain_core.tools import tool
-from rag.db_access import retrieve_chat_summary, retrieve_student_info #see if you should set it kind of like a @tool
+from rag.db_access import retrieve_chat_summary, retrieve_student_info, retrieve_img_context #see if you should set it kind of like a @tool
 
 PERSIST_DIR = "robot_vector_db"
 COLLECTION_NAME = "robot_problems"
@@ -17,6 +17,11 @@ def general_student_db_use(name_or_email : str):
     """create or update vectorStore for student"""
     student_docs, student_docs_len = retrieve_student_info(name_or_email)
     return create_or_update_vectorstore("student_info", student_docs, student_docs_len)
+
+def general_img_db_use():
+    """create or update vectorStore for image contexts"""
+    img_docs, img_docs_len = retrieve_img_context()
+    return create_or_update_vectorstore("image_context", img_docs, img_docs_len)
     
 def create_or_update_vectorstore(
     collection_name : str, 

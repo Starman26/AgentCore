@@ -67,3 +67,33 @@ def retrieve_chat_summary(chat_id):
     docs.append(Document(page_content=content, metadata=metadata))
 
     return docs, len(docs)
+
+def retrieve_img_context():
+    """Retrieve all image contexts for semantic search"""
+    res = SB.table("manual_imgs").select(
+        "id", "pdf_id", "page", "caption", "tags", "phash"
+    ).execute()
+    
+    rows = res.data or []
+    docs = []
+    
+    for row in rows:
+        metadata = {
+            "db_id": row.get("id"),      
+            "pdf_id": row.get("pdf_id"),  
+            "page": row.get("page"),        
+            "phash": row.get("phash"),  #img_id    
+            "tags": row.get("tags", []),     
+            "source": "manual_image"          
+        }
+        
+        content = f"""
+            Image description: {row.get('caption', '')}
+            PDF: {row.get('pdf_id', '')}
+            Page: {row.get('page', '')}
+            Tags: {', '.join(row.get('tags', []))}"""
+            
+        docs.append(Document(page_content=content, metadata=metadata))
+        
+    return docs, len(docs)
+    
