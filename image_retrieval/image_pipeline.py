@@ -42,14 +42,11 @@ class ImagesPipeline:
             )
             #get img base 64 info, for each img_id in extraction res
             img_ids = extraction_res.get("api_response")["outputId"]
-            img_urls = extraction_res.get("api_response")["outputUrl"]
-            for i, (img_id, img_url) in enumerate(zip(img_ids, img_urls)):
-                #Get base 64 format for each img file
+            for i, img_id in enumerate(img_ids):
+                #Get base 64 format for each img file to get the img context
                 base_64_img = self.get_img_file_from_img_id(img_id, "file")
-
+                
                 #use base64 to get img context with llm (gemini pro vision with gemini API could be used here)
-                #you could send requests with multiple images at once, maybe use a dictionary to 
-                # localize each image_id and it's base64
                 img_content_text = self.get_image_context(base_64_img)
                 
                 image_data = {
@@ -58,17 +55,13 @@ class ImagesPipeline:
                         "page_number": i + 1,
                         "img_path": f"{pdf_name}/img{i + 1}",
                         "img_context": img_content_text,         
-                        "img_url": img_url,         
-                }
+                        "img_id": img_id,         
+                    }
                 
                 #upload img supabase storage link and context to DB
                 new_img = self.storage_img_(image_data)
                 print(f"SALVADO DE IMG {i + 1}: {new_img}")
             
-            #use the same base64 to let the model show the imgs4
-            #u save the img link and the context of it, when the model needs it, u use a function to get the actual base_64 format of the img from the link
-            #saving the hole base_64 text is completely inefficient
-                            
             result = {
                 "success": True,
                 "pdf_url": pdf_url,
@@ -108,7 +101,7 @@ class ImagesPipeline:
         else:
             msg = response.text
             print("MENSAJE: ", msg)
-            return 
+            return
     
     def get_image_context(self, img_base64 : str) :
         """Function to get an image context from image base64 format
@@ -152,7 +145,7 @@ class ImagesPipeline:
                 "caption": image_data["img_context"],
                 "ocr_text": "",
                 "tags": ["manual", "robotic", "technical"],
-                "phash" : image_data["img_url"]
+                "phash" : image_data["img_id"]
             }).execute()
             
             return result.data
@@ -160,10 +153,6 @@ class ImagesPipeline:
         except Exception as e:
             print(f"Could not store image context: {e}")
             return f"upload_error_{image_data["img_id"]}"
-
-    
-        
-
            
 if __name__ == "__main__":   
     imageTest = ImagesPipeline()
