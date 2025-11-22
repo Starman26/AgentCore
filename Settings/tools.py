@@ -14,7 +14,7 @@ from supabase import create_client, Client
 from tavily import TavilyClient
 from langchain_openai import ChatOpenAI
 
-from rag.rag_logic import create_or_update_vectorstore, general_chat_db_use, general_student_db_use
+from rag.rag_logic import create_or_update_vectorstore, general_chat_db_use, general_student_db_use, general_img_db_use
 from Settings.state import State  # solo para tipado opcional
 
 # Constants
@@ -530,6 +530,61 @@ def retrieve_context(name_or_email: str, chat_id: int, query: str) -> str:
     return result
 
 
+# ---- Tool de búsqueda de imágenes por contexto semántico ----
+@tool
+def retrieve_image(query: str, k: int = 3) -> str:
+    """
+    Busca imágenes relevantes en la base vectorial basándose en el contexto de la conversación.
+    Devuelve los IDs (phash) y metadatos de las imágenes más relevantes.
+
+    - query: descripción del tipo de imagen o contexto que se busca
+    - k: número máximo de imágenes a retornar (por defecto 3)
+    
+    Retorna: String con formato "IMAGEN_ID:phash|PDF:pdf_id|PÁGINA:page|CAPTION:caption" 
+             para cada imagen encontrada, separadas por "\n---\n"
+    """
+    print(f"RETRIEVE_IMAGE: query={query}, k={k}")
+    
+    try:
+        # Crear o actualizar la base vectorial de imágenes
+        img_vectorstore = general_img_db_use()
+        img_retriever = img_vectorstore.as_retriever(search_kwargs={"k": k})
+        img_docs = img_retriever.invoke(query)
+        
+        if not img_docs:
+            return "NO_IMAGES_FOUND"
+        
+        results = []
+        for doc in img_docs:
+            m = doc.metadata or {}
+            phash = m.get("phash", "UNKNOWN")
+            pdf_id = m.get("pdf_id", "N/A")
+            page = m.get("page", "N/A")
+            tags = ", ".join(m.get("tags", []))
+            
+            # Extraer el caption del page_content
+            content = doc.page_content.strip()
+            caption_line = [line for line in content.split("\n") if "Image description:" in line]
+            caption = caption_line[0].replace("Image description:", "").strip() if caption_line else "N/A"
+            
+            result_str = (
+                f"IMAGEN_ID:{phash}|"
+                f"PDF:{pdf_id}|"
+                f"PÁGINA:{page}|"
+                f"CAPTION:{caption}|"
+                f"TAGS:{tags}"
+            )
+            results.append(result_str)
+        
+        final_result = "\n---\n".join(results)
+        print(f"Encontradas {len(img_docs)} imágenes relevantes")
+        return final_result
+        
+    except Exception as e:
+        print(f"Error en retrieve_image: {e}")
+        return f"ERROR:{str(e)}"
+
+
 # ---- Tool de ruteo interno entre agentes ----
 @tool
 def route_to(target: str) -> str:
@@ -651,7 +706,7 @@ def update_student_info(
 
 
 # =================== TOOL SETS ===================
-LAB_TOOLS = [retrieve_context, web_research, route_to]
+LAB_TOOLS = [retrieve_context, retrieve_image, web_research, route_to]
 GENERAL_TOOLS = [
     get_student_profile,
     update_student_goals,

@@ -14,7 +14,7 @@ def image_parser(pdf_url : str, img_extractor_url: str, img_extractor_api_key: s
     mp_encoder_extractedImages = MultipartEncoder(
         fields={
             'file': (f'{file_name}.pdf', open(pdf_url, 'rb'), 'output/pdf'),
-            'pages': '1-40',
+            'pages': '1-end',
             'output': f'{file_name}_extracted_images'
         }
     )

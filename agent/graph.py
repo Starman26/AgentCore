@@ -25,6 +25,7 @@ from Settings.prompts import (
 from Settings.tools import (
     web_research,
     retrieve_context,
+    retrieve_image,
     update_student_goals,
     update_learning_style,
     route_to,
@@ -105,8 +106,8 @@ llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY, temperature=0, req
 # =========================
 GENERAL_TOOLS = [CompleteOrEscalate, web_research, update_student_goals, update_learning_style, current_datetime]
 EDU_TOOLS = [CompleteOrEscalate, web_research, update_learning_style, current_datetime, get_student_profile]
-LAB_TOOLS = [CompleteOrEscalate, web_research, retrieve_context, current_datetime]
-IND_TOOLS = [CompleteOrEscalate, web_research, current_datetime]
+LAB_TOOLS = [CompleteOrEscalate, web_research, retrieve_context, retrieve_image, current_datetime]
+IND_TOOLS = [CompleteOrEscalate, web_research, retrieve_image, current_datetime]
 
 # =========================
 # Runnables por agente
@@ -543,7 +544,7 @@ graph.add_edge("ToAgentIndustrial", "industrial_agent_node")
 from langgraph.prebuilt import ToolNode, tools_condition
 
 tools_node = ToolNode(
-    tools=[web_research, retrieve_context, update_student_goals, update_learning_style, route_to, current_datetime]
+    tools=[web_research, retrieve_context, retrieve_image, update_student_goals, update_learning_style, route_to, current_datetime]
 )
 graph.add_node("tools", tools_node)
 
