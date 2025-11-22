@@ -28,7 +28,10 @@ class State(TypedDict, total=False):
     # Clasificador antiguo (compat)
     next_node: IntentType
     route_request: Optional[Literal["EDUCATION","LAB","INDUSTRIAL","GENERAL"]]
-    session_id: Optional[int]
+    session_id: Optional[str]  # Cambiado de int a str para usar thread_id
+    user_identified: Optional[bool]
+    user_email: Optional[str]
+    user_name: Optional[str]
 
 class SupervisorOutput(BaseModel):
     next_node: IntentType

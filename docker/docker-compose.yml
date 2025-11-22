@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  agentcore:
+    build:
+      context: ..
+      dockerfile: docker/dockerfile
+    image: agentcore:latest
+    container_name: agentcore-agent
+    ports:
+      - "8123:8123"
+      - "8000:8000"
+    env_file:
+      - ../.env
+    volumes:
+      - ../robot_vector_db:/app/robot_vector_db
+      - ../uploads:/app/uploads
+      - ../.env:/app/.env:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - agentcore-network
+
+networks:
+  agentcore-network:
+    driver: bridge
