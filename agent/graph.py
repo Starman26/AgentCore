@@ -29,14 +29,15 @@ from Settings.tools import (
     update_learning_style,
     route_to,
     current_datetime,
-    _submit_chat_history,
+    _submit_chat_history,   # ← ahora es la función normal
     get_student_profile,
     check_user_exists,
     register_new_student,
     update_student_info,
     _fetch_student,
+    summarize_all_chats,
+    retrieve_robot_support,
 )
-
 # =========================
 # Estado del grafo
 # =========================
@@ -103,10 +104,48 @@ llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY, temperature=0, req
 # =========================
 # Tools por agente
 # =========================
-GENERAL_TOOLS = [CompleteOrEscalate, web_research, update_student_goals, update_learning_style, current_datetime]
-EDU_TOOLS = [CompleteOrEscalate, web_research, update_learning_style, current_datetime, get_student_profile]
-LAB_TOOLS = [CompleteOrEscalate, web_research, retrieve_context, current_datetime]
-IND_TOOLS = [CompleteOrEscalate, web_research, current_datetime]
+# GENERAL: memoria global + perfil + RAG + web + tiempo
+GENERAL_TOOLS = [
+    CompleteOrEscalate,
+    web_research,
+    get_student_profile,
+    update_student_goals,
+    update_learning_style,
+    retrieve_context,      # RAG estudiante + chat (incluye estilo de aprendizaje en el contexto)
+    summarize_all_chats,   # proceso batch de resúmenes si se llama alguna vez
+    route_to,
+    current_datetime,
+]
+
+# EDUCATION: perfil + estilo + RAG para enseñanza ligada a historial del estudiante
+EDU_TOOLS = [
+    CompleteOrEscalate,
+    web_research,
+    get_student_profile,
+    update_learning_style,
+    retrieve_context,      # usa docs del estudiante + chat para ejemplos/conceptos
+    route_to,
+    current_datetime,
+]
+
+# LAB: RAG técnico fuerte (estudiante + chat) + opcional RoboSupport si lo añades
+LAB_TOOLS = [
+    CompleteOrEscalate,
+    web_research,
+    retrieve_context,      # documentos técnicos personales + historial de chat
+    retrieve_robot_support, # 🔁 descomenta si existe como @tool en Settings.tools
+    route_to,
+    current_datetime,
+]
+
+# INDUSTRIAL: puede reutilizar RAG técnico también
+IND_TOOLS = [
+    CompleteOrEscalate,
+    web_research,
+    retrieve_context,      # contexto técnico previo
+    retrieve_robot_support, # 🔁 descomenta si existe como @tool en Settings.tools
+    current_datetime,
+]
 
 # =========================
 # Runnables por agente
@@ -543,7 +582,17 @@ graph.add_edge("ToAgentIndustrial", "industrial_agent_node")
 from langgraph.prebuilt import ToolNode, tools_condition
 
 tools_node = ToolNode(
-    tools=[web_research, retrieve_context, update_student_goals, update_learning_style, route_to, current_datetime]
+    tools=[
+        web_research,
+        retrieve_context,
+        retrieve_robot_support,  # 🔁 descomenta si está definido como @tool
+        get_student_profile,
+        update_student_goals,
+        update_learning_style,
+        summarize_all_chats,
+        route_to,
+        current_datetime,
+    ]
 )
 graph.add_node("tools", tools_node)
 
