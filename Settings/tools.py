@@ -3,7 +3,7 @@
 
 import os
 from typing import List, Optional, Literal, Union
-from uuid import UUID, uuid5, NAMESPACE_DNS
+from uuid import UUID, uuid4, uuid5, NAMESPACE_DNS, NAMESPACE_URL
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -74,23 +74,28 @@ def _fetch_student(name_or_email: str):
     return rows[0] if rows else None
 
 
-def _normalize_session_id(raw_session_id: Union[int, str, UUID]) -> str:
+def _normalize_session_id(session_id: Union[int, str, UUID]) -> str:
     """
-    Normaliza cualquier identificador de sesión a un UUID válido (string).
-    - Si ya es UUID (objeto o string válido), se regresa tal cual.
-    - Si es un string/int arbitrario, se genera un UUID determinístico a partir de él.
-    """
-    if isinstance(raw_session_id, UUID):
-        return str(raw_session_id)
+    Normaliza cualquier session_id recibido a un UUID string válido.
 
-    s = str(raw_session_id)
+    - Si ya es UUID válido, lo devuelve tal cual.
+    - Si viene vacío, genera uno nuevo (uuid4).
+    - Si es una cadena arbitraria (p.ej. "session-123"), genera un UUID
+      determinístico basado en esa cadena (uuid5).
+    """
+    if isinstance(session_id, UUID):
+        return str(session_id)
+
+    if session_id is None or str(session_id).strip() == "":
+        return str(uuid4())
+
+    s = str(session_id)
     try:
-        # Si ya es un UUID en texto, úsalo
         UUID(s)
-        return s
+        return s  # ya era un UUID válido
     except ValueError:
-        # Crear un UUID determinístico basado en el string de sesión
-        return str(uuid5(NAMESPACE_DNS, f"session:{s}"))
+        # Lo convertimos a un UUID determinístico basado en la cadena
+        return str(uuid5(NAMESPACE_URL, s))
 
 
 def _submit_chat_history(
@@ -105,36 +110,51 @@ def _submit_chat_history(
     Se usa desde graph.py (save_user_input / save_agent_output).
     NO es un tool.
 
-    - session_id: identificador lógico de la sesión (lo normalizamos a UUID).
-    - user_id: DEBE ser el auth.user.id de Supabase (UUID). Si no viene, se lanza error.
+    Respeta las relaciones:
+      auth.users.id -> app_user.id -> chat_session.user_id -> chat_message.session_id
     """
-    if not user_id:
-        raise ValueError(
-            "user_id es obligatorio en _submit_chat_history; "
-            "pasa el auth.user.id desde el frontend/backend."
-        )
-
-    # Normalizamos siempre a UUID string compatible con la BD
-    session_id_norm = _normalize_session_id(session_id)
+    # Normalizar session_id a UUID string
+    session_id = _normalize_session_id(session_id)
 
     created_at = created_at or datetime.now(tz=timezone.utc).isoformat()
 
+    # Si user_id parece un email, avisamos y no guardamos (rompería el FK).
+    if user_id and "@" in user_id:
+        print(
+            "[_submit_chat_history] WARNING: user_id parece email "
+            f"('{user_id}'). Se espera auth.user.id (UUID). No se guarda el mensaje."
+        )
+        return None
+
+    # Si no hay user_id, no podemos cumplir el FK: salimos.
+    if not user_id:
+        print(
+            "[_submit_chat_history] WARNING: llamado sin user_id, "
+            "no se guardará nada en chat_session / chat_message."
+        )
+        return None
+
     try:
-        # 1) Asegurar usuario en app_user
+        # 1) Asegurar usuario en app_user (FK -> auth.users.id)
         app_user_payload = {
-            "id": user_id,          # mismo UUID que auth.users.id
+            "id": user_id,
             "created_at": created_at,
             "role": "laboratorista",  # ⚠️ Debe existir en enum user_role
             "team_id": None,
         }
-        SB.table("app_user").upsert(
-            app_user_payload,
-            on_conflict="id",
-        ).execute()
+        try:
+            SB.table("app_user").upsert(
+                app_user_payload,
+                on_conflict="id",
+            ).execute()
+        except Exception as e:
+            print("[app_user upsert] ERROR:", e)
+            # Si truena por FK (auth.users.id inexistente), no seguimos
+            return None
 
-        # 2) Crear/actualizar chat_session (FK a app_user.id)
+        # 2) Crear/actualizar chat_session
         session_payload = {
-            "id": session_id_norm,
+            "id": session_id,
             "user_id": user_id,
             "started_at": created_at,
         }
@@ -149,7 +169,7 @@ def _submit_chat_history(
             SB.table("chat_message")
             .insert(
                 {
-                    "session_id": session_id_norm,
+                    "session_id": session_id,
                     "role": role,
                     "content": content,
                     "created_at": created_at,
