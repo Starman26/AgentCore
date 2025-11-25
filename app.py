@@ -28,11 +28,13 @@ app.add_middleware(
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     user_email: Optional[str] = None
     timezone: Optional[str] = "America/Monterrey"
+
 
 class ChatResponse(BaseModel):
     response: str
@@ -40,12 +42,14 @@ class ChatResponse(BaseModel):
     user_identified: bool
     timestamp: str
 
+
 class UploadResponse(BaseModel):
     filename: str
     file_path: str
     size: int
     upload_time: str
     message: str
+
 
 @app.get("/")
 async def root():
@@ -57,104 +61,131 @@ async def root():
             "message": "/message?mensaje=tu_mensaje (GET - Simple)",
             "chat": "/chat (POST - Completo)",
             "upload": "/upload (POST)",
-            "health": "/health"
+            "health": "/health",
         },
         "examples": {
             "simple_message": "http://localhost:8000/message?mensaje=Hola como estas"
-        }
+        },
     }
+
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint to verify server status"""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
 
+
 @app.get("/message")
-async def simple_message(mensaje: str):
+async def simple_message(
+    mensaje: str,
+    session_id: Optional[str] = None,
+    user_email: Optional[str] = None,
+    timezone: str = "America/Monterrey",
+):
     """
     Simple endpoint to send messages via query parameters.
 
-    Example: http://localhost:8000/message?mensaje=Hello%20how%20are%20you
+    Example:
+      http://localhost:8000/message?mensaje=Hello%20how%20are%20you
+      http://localhost:8000/message?mensaje=Hola&session_id=xyz&user_email=test@tec.mx
 
     Args:
-        mensaje: The message to send
+        mensaje: mensaje del usuario
+        session_id: identificador de sesión (se usa como thread_id en LangGraph)
+        user_email: correo opcional del usuario
+        timezone: zona horaria
 
     Returns:
-        Agent's response in a simple format
+        Respuesta del agente en formato simple
     """
     try:
-        session_id = str(uuid.uuid4())
-        timezone = "America/Monterrey"
-        
+        # Si el frontend no envía session_id, creamos uno nuevo
+        if session_id is None:
+            session_id = str(uuid.uuid4())
+
+        # thread_id = session_id → mantiene la conversación entre mensajes
         config = {"configurable": {"thread_id": session_id}}
-        
+
         initial_state: State = {
             "messages": [HumanMessage(content=mensaje)],
             "tz": timezone,
-            "session_id": session_id
+            "session_id": session_id,
+            "user_email": user_email,
         }
-        
+
         result = compiled_graph.invoke(initial_state, config)
-        
+
         messages = result.get("messages", [])
         agent_response = ""
-        
+
+        # Buscar el último mensaje de tipo 'ai'
         for msg in reversed(messages):
-            if hasattr(msg, 'type') and msg.type == 'ai':
-                agent_response = getattr(msg, 'content', '')
+            if hasattr(msg, "type") and msg.type == "ai":
+                agent_response = getattr(msg, "content", "")
                 break
-        
+
         if not agent_response:
-            agent_response = "Sorry, I couldn't process your message. Please try again."
-        
+            agent_response = (
+                "Sorry, I couldn't process your message. Please try again."
+            )
+
         return {
             "response": agent_response,
-            "session_id": session_id
+            "session_id": session_id,
         }
-        
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing the message: {str(e)}")
-    
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing the message: {str(e)}",
+        )
+
+
 @app.post("/upload", response_model=UploadResponse)
 async def upload_file(
     file: UploadFile = File(...),
 ):
     """
     Endpoint to upload files.
-    
+
     Args:
         file: File to upload
-    
+
     Returns:
         Information about the uploaded file
     """
     try:
         if not file.filename:
             raise HTTPException(status_code=400, detail="Nombre de archivo inválido")
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         file_extension = Path(file.filename).suffix
         safe_filename = f"{timestamp}_{file.filename}"
         file_path = UPLOAD_DIR / safe_filename
-        
+
         content = await file.read()
         file_size = len(content)
-        
+
         with open(file_path, "wb") as f:
             f.write(content)
-        
+
         return UploadResponse(
             filename=file.filename,
             file_path=str(file_path),
             size=file_size,
             upload_time=datetime.now().isoformat(),
-            message=f"File '{file.filename}' uploaded successfully")
-        
+            message=f"File '{file.filename}' uploaded successfully",
+        )
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error uploading the file: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error uploading the file: {str(e)}",
+        )
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
