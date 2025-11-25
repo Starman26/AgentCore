@@ -19,7 +19,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, change this to specific domains
+    allow_origins=["*"],  # En producción, cambiar a dominios específicos
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -87,6 +87,7 @@ async def simple_message(
     """
     Endpoint simple para enviar mensajes usando query params,
     pero reutilizando la misma sesión si el cliente manda session_id.
+    Si viene user_email (usuario logueado en la app), lo marcamos como identificado.
     """
     try:
         timezone = "America/Monterrey"
@@ -94,19 +95,35 @@ async def simple_message(
         # Si el cliente manda session_id lo usamos; si no, creamos uno nuevo
         real_session_id = session_id or str(uuid.uuid4())
 
+        # Consideramos "usuario confiable" si trae un correo real distinto de unknown@user.com
+        trusted_user = bool(
+            user_email
+            and user_email.strip()
+            and user_email != "unknown@user.com"
+        )
+
+        # Config para el grafo (thread_id +, opcionalmente, user_email)
         config = {
             "configurable": {
                 "thread_id": real_session_id,
-                "user_email": user_email,
             }
         }
+        if user_email:
+            config["configurable"]["user_email"] = user_email
 
+        # Estado inicial para el grafo
         initial_state: State = {
             "messages": [HumanMessage(content=mensaje)],
             "tz": timezone,
             "session_id": real_session_id,
-            "user_email": user_email,
         }
+
+        if user_email:
+            initial_state["user_email"] = user_email
+
+        # 🔑 Si viene desde la app logueada, marcamos ya como identificado
+        if trusted_user:
+            initial_state["user_identified"] = True
 
         result = compiled_graph.invoke(initial_state, config)
 
