@@ -83,36 +83,28 @@ async def simple_message(
     mensaje: str,
     session_id: Optional[str] = None,
     user_email: Optional[str] = None,
-    timezone: str = "America/Monterrey",
 ):
     """
-    Simple endpoint to send messages via query parameters.
-
-    Example:
-      http://localhost:8000/message?mensaje=Hello%20how%20are%20you
-      http://localhost:8000/message?mensaje=Hola&session_id=xyz&user_email=test@tec.mx
-
-    Args:
-        mensaje: mensaje del usuario
-        session_id: identificador de sesión (se usa como thread_id en LangGraph)
-        user_email: correo opcional del usuario
-        timezone: zona horaria
-
-    Returns:
-        Respuesta del agente en formato simple
+    Endpoint simple para enviar mensajes usando query params,
+    pero reutilizando la misma sesión si el cliente manda session_id.
     """
     try:
-        # Si el frontend no envía session_id, creamos uno nuevo
-        if session_id is None:
-            session_id = str(uuid.uuid4())
+        timezone = "America/Monterrey"
 
-        # thread_id = session_id → mantiene la conversación entre mensajes
-        config = {"configurable": {"thread_id": session_id}}
+        # Si el cliente manda session_id lo usamos; si no, creamos uno nuevo
+        real_session_id = session_id or str(uuid.uuid4())
+
+        config = {
+            "configurable": {
+                "thread_id": real_session_id,
+                "user_email": user_email,
+            }
+        }
 
         initial_state: State = {
             "messages": [HumanMessage(content=mensaje)],
             "tz": timezone,
-            "session_id": session_id,
+            "session_id": real_session_id,
             "user_email": user_email,
         }
 
@@ -121,20 +113,19 @@ async def simple_message(
         messages = result.get("messages", [])
         agent_response = ""
 
-        # Buscar el último mensaje de tipo 'ai'
         for msg in reversed(messages):
-            if hasattr(msg, "type") and msg.type == "ai":
+            if getattr(msg, "type", None) == "ai":
                 agent_response = getattr(msg, "content", "")
                 break
 
         if not agent_response:
             agent_response = (
-                "Sorry, I couldn't process your message. Please try again."
+                "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo."
             )
 
         return {
             "response": agent_response,
-            "session_id": session_id,
+            "session_id": real_session_id,
         }
 
     except Exception as e:
