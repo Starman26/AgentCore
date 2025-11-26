@@ -104,84 +104,64 @@ def _submit_chat_history(
     content: str,
     created_at: Optional[str] = None,
     user_id: Optional[str] = None,
+    user_email: Optional[str] = None,
 ):
     """
-    Helper interno: guarda en la BD un mensaje de chat con sesión y usuario.
-    Se usa desde graph.py (save_user_input / save_agent_output).
-    NO es un tool.
-
-    Respeta las relaciones:
-      auth.users.id -> app_user.id -> chat_session.user_id -> chat_message.session_id
+    Guarda un mensaje de chat asociado a una sesión.
+    Relaciona la sesión con el usuario principalmente por email.
+    - NO obliga a que user_id sea UUID válido.
+    - NO toca app_user ni la tabla users de Supabase.
     """
-    # Normalizar session_id a UUID string
-    session_id = _normalize_session_id(session_id)
+
+    # Normalizar session_id a string simple
+    if isinstance(session_id, UUID):
+        session_id = str(session_id)
 
     created_at = created_at or datetime.now(tz=timezone.utc).isoformat()
 
-    # Si user_id parece un email, avisamos y no guardamos (rompería el FK).
-    if user_id and "@" in user_id:
-        print(
-            "[_submit_chat_history] WARNING: user_id parece email "
-            f"('{user_id}'). Se espera auth.user.id (UUID). No se guarda el mensaje."
-        )
-        return None
-
-    # Si no hay user_id, no podemos cumplir el FK: salimos.
-    if not user_id:
-        print(
-            "[_submit_chat_history] WARNING: llamado sin user_id, "
-            "no se guardará nada en chat_session / chat_message."
-        )
-        return None
-
     try:
-        # 1) Asegurar usuario en app_user (FK -> auth.users.id)
-        app_user_payload = {
-            "id": user_id,
-            "created_at": created_at,
-            "role": "laboratorista",  # ⚠️ Debe existir en enum user_role
-            "team_id": None,
-        }
-        try:
-            SB.table("app_user").upsert(
-                app_user_payload,
-                on_conflict="id",
-            ).execute()
-        except Exception as e:
-            print("[app_user upsert] ERROR:", e)
-            # Si truena por FK (auth.users.id inexistente), no seguimos
-            return None
-
-        # 2) Crear/actualizar chat_session
+        # --- 1) Upsert de la sesión ---
         session_payload = {
             "id": session_id,
-            "user_id": user_id,
             "started_at": created_at,
         }
 
-        SB.table("chat_session").upsert(
-            session_payload,
-            on_conflict="id",
-        ).execute()
+        # Si tenemos email, lo usamos como identificador de usuario
+        if user_email and "@" in user_email:
+            session_payload["user_email"] = user_email.strip()
 
-        # 3) Insertar mensaje en chat_message
-        return (
-            SB.table("chat_message")
-            .insert(
-                {
-                    "session_id": session_id,
-                    "role": role,
-                    "content": content,
-                    "created_at": created_at,
-                }
+        # Si en un futuro quieres volver a usar user_id (UUID), aquí se puede setear
+        if user_id:
+            session_payload["user_id"] = user_id
+
+        try:
+            SB.table("chat_session").upsert(
+                session_payload,
+                on_conflict="id",
+            ).execute()
+        except Exception as e:
+            print("[_submit_chat_history] ERROR upsert chat_session:", e)
+
+        # --- 2) Insertar el mensaje ---
+        try:
+            return (
+                SB.table("chat_message")
+                .insert(
+                    {
+                        "session_id": session_id,
+                        "role": role,
+                        "content": content,
+                        "created_at": created_at,
+                    }
+                )
+                .execute()
             )
-            .execute()
-        )
+        except Exception as e:
+            print("[_submit_chat_history] ERROR insert chat_message:", e)
 
     except Exception as e:
-        print("Error saving chat:", e)
-        raise
-
+        print("Error saving chat (fatal):", e)
+        return None
 
 def _submit_student(
     full_name: str,
