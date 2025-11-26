@@ -1,11 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import uuid
 from datetime import datetime
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, ToolMessage  # 👈 añadido
+from langchain_core.messages import HumanMessage
 import uvicorn
 from pathlib import Path
 
@@ -81,7 +81,7 @@ async def health_check():
 async def simple_message(
     mensaje: str,
     session_id: Optional[str] = None,
-    user_id: Optional[str] = None,      # ⬅️ auth.user.id (UUID)
+    user_id: Optional[str] = None,   # auth.user.id (UUID)
     user_email: Optional[str] = None,
 ):
     """
@@ -111,9 +111,7 @@ async def simple_message(
         # 4) Config para el grafo (para LangGraph + nuestros tools)
         config = {
             "configurable": {
-                # para MemorySaver / LangGraph
                 "thread_id": real_session_id,
-                # para nuestra lógica de BD
                 "session_id": real_session_id,
             }
         }
@@ -138,11 +136,12 @@ async def simple_message(
             initial_state["user_identified"] = True
 
         # 6) Invocar grafo
-        result = compiled_graph.invoke(initial_state, config)
+        result: State = compiled_graph.invoke(initial_state, config)
 
         messages = result.get("messages", [])
         agent_response = ""
 
+        # Último mensaje del agente
         for msg in reversed(messages):
             if getattr(msg, "type", None) == "ai":
                 agent_response = getattr(msg, "content", "")
@@ -153,40 +152,24 @@ async def simple_message(
                 "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo."
             )
 
-        # 7) Extraer eventos de tools para el panel de debug
-        debug_tool_events = []
+        # ===== EXTRAER INFO DE TOOLS PARA EL PANEL DE DEBUG =====
+        tool_events = []
         for msg in messages:
-            m_type = getattr(msg, "type", None)
-
-            # llamadas desde un AIMessage
-            tool_calls = getattr(msg, "tool_calls", None) or []
+            tool_calls = getattr(msg, "tool_calls", None)
             if tool_calls:
-                for tc in tool_calls:
-                    debug_tool_events.append(
-                        {
-                            "kind": "call",
-                            "tool_name": tc.get("name"),
-                            "args": tc.get("args"),
-                            "id": tc.get("id"),
-                        }
-                    )
-
-            # respuestas de herramientas (ToolMessage)
-            if m_type == "tool":
-                debug_tool_events.append(
+                tool_events.append(
                     {
-                        "kind": "result",
-                        "tool_name": getattr(msg, "name", None),
-                        "content": getattr(msg, "content", ""),
+                        "from": getattr(msg, "type", "unknown"),
+                        "tool_calls": tool_calls,
                     }
                 )
+
+        debug_payload = {"tool_events": tool_events}
 
         return {
             "response": agent_response,
             "session_id": real_session_id,
-            "debug": {
-                "tool_events": debug_tool_events,
-            },
+            "debug": debug_payload,
         }
 
     except Exception as e:
@@ -208,7 +191,6 @@ async def upload_file(
             raise HTTPException(status_code=400, detail="Nombre de archivo inválido")
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_extension = Path(file.filename).suffix
         safe_filename = f"{timestamp}_{file.filename}"
         file_path = UPLOAD_DIR / safe_filename
 
