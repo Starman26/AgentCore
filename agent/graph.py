@@ -367,7 +367,6 @@ def initial_node(state: State, config: RunnableConfig) -> State:
 def save_user_input(state: State):
     """Guarda el input del usuario en la BD."""
     session_id = state.get("session_id")
-
     if not session_id:
         return {}
 
@@ -377,28 +376,39 @@ def save_user_input(state: State):
 
     last = msgs[-1]
 
+    # Determinar rol y contenido en texto plano
     if hasattr(last, "type") and hasattr(last, "content"):
-        role = "student" if last.type == "human" else last.type
+        # LangChain usa "human" para el usuario → lo mapeamos a "student"
+        role = "student" if last.type == "human" else "agent"
         content = last.content
         if isinstance(content, list):
-            text_parts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in content]
+            text_parts = [
+                item.get("text", "") if isinstance(item, dict) else str(item)
+                for item in content
+            ]
             content = " ".join(text_parts).strip()
     else:
         role = "student"
         content = last.get("content") if isinstance(last, dict) else str(last)
 
-    user_id = state.get("user_email")
+    user_email = state.get("user_email")
+
     try:
-        _submit_chat_history(session_id, role, content, user_id=user_id)
+        _submit_chat_history(
+            session_id=session_id,
+            role=role,
+            content=content,
+            user_email=user_email,   # ⬅️ ahora se relaciona por email
+        )
     except Exception as e:
-        print(f"[save_user_input] Error: {e}")
+        print(f"[save_user_input] Error al guardar chat: {e}")
+
     return {}
 
 
 def save_agent_output(state: State):
     """Guarda el output del agente en la BD."""
     session_id = state.get("session_id")
-
     if not session_id:
         return {}
 
@@ -408,21 +418,32 @@ def save_agent_output(state: State):
 
     last = msgs[-1]
 
+    # El último mensaje aquí debe ser del agente
     if hasattr(last, "type") and hasattr(last, "content"):
         role = "agent"
         content = last.content
         if isinstance(content, list):
-            text_parts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in content]
+            text_parts = [
+                item.get("text", "") if isinstance(item, dict) else str(item)
+                for item in content
+            ]
             content = " ".join(text_parts).strip()
     else:
         role = "agent"
         content = last.get("content") if isinstance(last, dict) else str(last)
 
-    user_id = state.get("user_email")
+    user_email = state.get("user_email")
+
     try:
-        _submit_chat_history(session_id, role, content, user_id=user_id)
+        _submit_chat_history(
+            session_id=session_id,
+            role=role,
+            content=content,
+            user_email=user_email,   # ⬅️ también se liga al mismo email
+        )
     except Exception as e:
-        print(f"[save_agent_output] Error: {e}")
+        print(f"[save_agent_output] Error al guardar chat: {e}")
+
     return {}
 
 
