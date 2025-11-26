@@ -7,7 +7,6 @@ from datetime import datetime
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
 import uvicorn
-import os
 from pathlib import Path
 
 from agent.graph import graph, State
@@ -82,49 +81,63 @@ async def health_check():
 async def simple_message(
     mensaje: str,
     session_id: Optional[str] = None,
+    user_id: Optional[str] = None,      # ⬅️ NUEVO: auth.user.id (UUID)
     user_email: Optional[str] = None,
 ):
     """
-    Endpoint simple para enviar mensajes usando query params,
-    pero reutilizando la misma sesión si el cliente manda session_id.
-    Si viene user_email (usuario logueado en la app), lo marcamos como identificado.
+    Endpoint simple para enviar mensajes usando query params.
+    - session_id: UUID de la sesión de chat
+    - user_id: UUID de Supabase (auth.user.id)
+    - user_email: solo para contexto, NO se usa como user_id
     """
     try:
         timezone = "America/Monterrey"
 
-        # Si el cliente manda session_id lo usamos; si no, creamos uno nuevo
+        # 1) Resolver session_id (UUID para la sesión)
         real_session_id = session_id or str(uuid.uuid4())
 
-        # Consideramos "usuario confiable" si trae un correo real distinto de unknown@user.com
-        trusted_user = bool(
-            user_email
-            and user_email.strip()
-            and user_email != "unknown@user.com"
-        )
+        # 2) Validar que user_id, si viene, parezca un UUID
+        valid_user_id: Optional[str] = None
+        if user_id:
+            try:
+                _ = uuid.UUID(user_id)
+                valid_user_id = user_id
+            except ValueError:
+                print(f"[simple_message] WARNING: user_id inválido: {user_id}")
 
-        # Config para el grafo (thread_id +, opcionalmente, user_email)
+        # 3) Usuario confiable si tenemos un UUID válido
+        trusted_user = valid_user_id is not None
+
+        # 4) Config para el grafo (para LangGraph + nuestros tools)
         config = {
             "configurable": {
+                # para MemorySaver / LangGraph
                 "thread_id": real_session_id,
+                # para nuestra lógica de BD
+                "session_id": real_session_id,
             }
         }
+        if valid_user_id:
+            config["configurable"]["user_id"] = valid_user_id
         if user_email:
             config["configurable"]["user_email"] = user_email
 
-        # Estado inicial para el grafo
+        # 5) Estado inicial del grafo
         initial_state: State = {
             "messages": [HumanMessage(content=mensaje)],
             "tz": timezone,
             "session_id": real_session_id,
         }
 
+        if valid_user_id:
+            initial_state["user_id"] = valid_user_id
         if user_email:
             initial_state["user_email"] = user_email
 
-        # 🔑 Si viene desde la app logueada, marcamos ya como identificado
         if trusted_user:
             initial_state["user_identified"] = True
 
+        # 6) Invocar grafo
         result = compiled_graph.invoke(initial_state, config)
 
         messages = result.get("messages", [])
@@ -158,12 +171,6 @@ async def upload_file(
 ):
     """
     Endpoint to upload files.
-
-    Args:
-        file: File to upload
-
-    Returns:
-        Information about the uploaded file
     """
     try:
         if not file.filename:
