@@ -5,7 +5,7 @@ from typing import Optional, List
 import uuid
 from datetime import datetime
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage  # 👈 añadido
 import uvicorn
 from pathlib import Path
 
@@ -81,7 +81,7 @@ async def health_check():
 async def simple_message(
     mensaje: str,
     session_id: Optional[str] = None,
-    user_id: Optional[str] = None,      # ⬅️ NUEVO: auth.user.id (UUID)
+    user_id: Optional[str] = None,      # ⬅️ auth.user.id (UUID)
     user_email: Optional[str] = None,
 ):
     """
@@ -153,9 +153,40 @@ async def simple_message(
                 "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo."
             )
 
+        # 7) Extraer eventos de tools para el panel de debug
+        debug_tool_events = []
+        for msg in messages:
+            m_type = getattr(msg, "type", None)
+
+            # llamadas desde un AIMessage
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            if tool_calls:
+                for tc in tool_calls:
+                    debug_tool_events.append(
+                        {
+                            "kind": "call",
+                            "tool_name": tc.get("name"),
+                            "args": tc.get("args"),
+                            "id": tc.get("id"),
+                        }
+                    )
+
+            # respuestas de herramientas (ToolMessage)
+            if m_type == "tool":
+                debug_tool_events.append(
+                    {
+                        "kind": "result",
+                        "tool_name": getattr(msg, "name", None),
+                        "content": getattr(msg, "content", ""),
+                    }
+                )
+
         return {
             "response": agent_response,
             "session_id": real_session_id,
+            "debug": {
+                "tool_events": debug_tool_events,
+            },
         }
 
     except Exception as e:
