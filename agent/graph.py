@@ -29,7 +29,7 @@ from Settings.tools import (
     update_learning_style,
     route_to,
     current_datetime,
-    _submit_chat_history,   # ← ahora es la función normal
+    _submit_chat_history,   # ← función que persiste en Supabase/DB
     get_student_profile,
     check_user_exists,
     register_new_student,
@@ -38,8 +38,9 @@ from Settings.tools import (
     summarize_all_chats,
     retrieve_robot_support,
 )
+
 # =========================
-# Estado del grafo
+# Helpers para stack de agentes
 # =========================
 def update_current_agent_stack(left: list[str], right: Optional[str]) -> list[str]:
     if right is None:
@@ -58,16 +59,23 @@ def update_current_agent_stack(left: list[str], right: Optional[str]) -> list[st
     return left + [right]
 
 
+# =========================
+# Estado del grafo
+# =========================
 class State(TypedDict, total=False):
+    # Historial de mensajes (memoria) — LangGraph lo mezcla con add_messages
     messages: Annotated[List[AnyMessage], add_messages]
+
+    # Resumen de perfil del estudiante
     profile_summary: Optional[str]
 
-    # Reloj / zona horaria (inyectados en initial_node)
+    # Reloj / zona horaria
     tz: str
     now_utc: str
     now_local: str
     now_human: str
 
+    # Pila de agentes activos
     current_agent: Annotated[
         List[
             Literal[
@@ -80,11 +88,16 @@ class State(TypedDict, total=False):
         ],
         update_current_agent_stack,
     ]
+
+    # Info de usuario / sesión
     user_identified: Optional[bool]
     user_email: Optional[str]
     user_name: Optional[str]
     session_id: Optional[str]
     awaiting_user_info: Optional[str]
+
+    # Título de la sesión (para el frontend / Supabase)
+    session_title: Optional[str]
 
 
 class CompleteOrEscalate(BaseModel):
@@ -99,11 +112,17 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("Falta OPENAI_API_KEY en .env")
 
-llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY, temperature=0, request_timeout=30)
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    api_key=OPENAI_API_KEY,
+    temperature=0,
+    request_timeout=30,
+)
 
 # =========================
 # Tools por agente
 # =========================
+
 # GENERAL: memoria global + perfil + RAG + web + tiempo
 GENERAL_TOOLS = [
     CompleteOrEscalate,
@@ -111,39 +130,39 @@ GENERAL_TOOLS = [
     get_student_profile,
     update_student_goals,
     update_learning_style,
-    retrieve_context,      # RAG estudiante + chat (incluye estilo de aprendizaje en el contexto)
-    summarize_all_chats,   # proceso batch de resúmenes si se llama alguna vez
+    retrieve_context,      # RAG estudiante + chat
+    summarize_all_chats,   # batch summary si se llama
     route_to,
     current_datetime,
 ]
 
-# EDUCATION: perfil + estilo + RAG para enseñanza ligada a historial del estudiante
+# EDUCATION: perfil + estilo + RAG para enseñanza
 EDU_TOOLS = [
     CompleteOrEscalate,
     web_research,
     get_student_profile,
     update_learning_style,
-    retrieve_context,      # usa docs del estudiante + chat para ejemplos/conceptos
+    retrieve_context,
     route_to,
     current_datetime,
 ]
 
-# LAB: RAG técnico fuerte (estudiante + chat) + opcional RoboSupport si lo añades
+# LAB: RAG técnico fuerte + soporte de robots
 LAB_TOOLS = [
     CompleteOrEscalate,
     web_research,
-    retrieve_context,      # documentos técnicos personales + historial de chat
-    retrieve_robot_support, # 🔁 descomenta si existe como @tool en Settings.tools
+    retrieve_context,
+    retrieve_robot_support,
     route_to,
     current_datetime,
 ]
 
-# INDUSTRIAL: puede reutilizar RAG técnico también
+# INDUSTRIAL: similar a LAB
 IND_TOOLS = [
     CompleteOrEscalate,
     web_research,
-    retrieve_context,      # contexto técnico previo
-    retrieve_robot_support, # 🔁 descomenta si existe como @tool en Settings.tools
+    retrieve_context,
+    retrieve_robot_support,
     current_datetime,
 ]
 
@@ -154,7 +173,9 @@ general_llm = llm.bind_tools(GENERAL_TOOLS)
 education_llm = llm.bind_tools(EDU_TOOLS)
 lab_llm = llm.bind_tools(LAB_TOOLS)
 industrial_llm = llm.bind_tools(IND_TOOLS)
-identification_llm = llm.bind_tools([check_user_exists, register_new_student, update_student_info])
+identification_llm = llm.bind_tools(
+    [check_user_exists, register_new_student, update_student_info]
+)
 
 general_runnable = general_prompt | general_llm
 education_runnable = education_prompt | education_llm
@@ -179,6 +200,9 @@ def industrial_agent_node(state: State):
     return {"messages": industrial_runnable.invoke(state)}
 
 
+# =========================
+# Identificación de usuario
+# =========================
 def identify_user_node(state: State):
     """
     Identifica al usuario pidiendo nombre/correo si no está identificado.
@@ -204,8 +228,10 @@ def identify_user_node(state: State):
         return {
             "messages": [
                 AIMessage(
-                    content="¡Hola! Para poder ayudarte mejor, necesito conocerte primero. "
-                    "¿Podrías decirme tu nombre completo y correo electrónico?"
+                    content=(
+                        "¡Hola! Para poder ayudarte mejor, necesito conocerte primero. "
+                        "¿Podrías decirme tu nombre completo y correo electrónico?"
+                    )
                 )
             ],
             "awaiting_user_info": "name_email",
@@ -308,8 +334,10 @@ def process_identification_tools(state: State):
             if student:
                 profile_summary = get_student_profile.invoke({"name_or_email": email})
                 confirmation_msg = AIMessage(
-                    content=f"¡Perfecto, {student.get('full_name', 'usuario')}! "
-                    "Ya te tengo identificado. ¿En qué puedo ayudarte hoy?"
+                    content=(
+                        f"¡Perfecto, {student.get('full_name', 'usuario')}! "
+                        "Ya te tengo identificado. ¿En qué puedo ayudarte hoy?"
+                    )
                 )
                 return {
                     "messages": [tool_message, confirmation_msg],
@@ -349,6 +377,7 @@ def initial_node(state: State, config: RunnableConfig) -> State:
     if "profile_summary" not in state or state["profile_summary"] is None:
         state["profile_summary"] = "Perfil aún no registrado."
 
+    # Conectar session_id con thread_id si viene desde config
     if not state.get("session_id"):
         configurable = config.get("configurable", {})
         thread_id = configurable.get("thread_id")
@@ -364,6 +393,24 @@ def initial_node(state: State, config: RunnableConfig) -> State:
     return state
 
 
+# =========================
+# Guardado de historial
+# =========================
+def _flatten_message_content(content) -> str:
+    """Convierte content (str o lista de bloques) en texto plano."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text_parts.append(str(item.get("text", "")))
+            else:
+                text_parts.append(str(item))
+        return " ".join(text_parts).strip()
+    return str(content)
+
+
 def save_user_input(state: State):
     """Guarda el input del usuario en la BD."""
     session_id = state.get("session_id")
@@ -376,17 +423,10 @@ def save_user_input(state: State):
 
     last = msgs[-1]
 
-    # Determinar rol y contenido en texto plano
     if hasattr(last, "type") and hasattr(last, "content"):
-        # LangChain usa "human" para el usuario → lo mapeamos a "student"
+        # "human" → usuario
         role = "student" if last.type == "human" else "agent"
-        content = last.content
-        if isinstance(content, list):
-            text_parts = [
-                item.get("text", "") if isinstance(item, dict) else str(item)
-                for item in content
-            ]
-            content = " ".join(text_parts).strip()
+        content = _flatten_message_content(last.content)
     else:
         role = "student"
         content = last.get("content") if isinstance(last, dict) else str(last)
@@ -398,7 +438,7 @@ def save_user_input(state: State):
             session_id=session_id,
             role=role,
             content=content,
-            user_email=user_email,   # ⬅️ ahora se relaciona por email
+            user_email=user_email,
         )
     except Exception as e:
         print(f"[save_user_input] Error al guardar chat: {e}")
@@ -406,8 +446,35 @@ def save_user_input(state: State):
     return {}
 
 
+# ===== Helper para generar título de sesión =====
+def generate_session_title_from_history(messages: List[AnyMessage]) -> str:
+    """
+    Genera un título breve usando el primer mensaje del usuario.
+    (Procesamiento del agente, pero sin otra llamada al LLM.)
+    """
+    first_user_text = None
+
+    for msg in messages:
+        msg_type = getattr(msg, "type", None) or getattr(msg, "role", None)
+        if msg_type in ("human", "user", "student"):
+            first_user_text = _flatten_message_content(getattr(msg, "content", ""))
+            if first_user_text:
+                break
+
+    if not first_user_text:
+        return "Sesión sin título"
+
+    first_user_text = first_user_text.strip()
+    if len(first_user_text) > 60:
+        first_user_text = first_user_text[:60] + "…"
+    return first_user_text or "Sesión sin título"
+
+
 def save_agent_output(state: State):
-    """Guarda el output del agente en la BD."""
+    """
+    Guarda el output del agente en la BD y genera un título de sesión
+    basado en todo el historial (para el frontend).
+    """
     session_id = state.get("session_id")
     if not session_id:
         return {}
@@ -421,13 +488,7 @@ def save_agent_output(state: State):
     # El último mensaje aquí debe ser del agente
     if hasattr(last, "type") and hasattr(last, "content"):
         role = "agent"
-        content = last.content
-        if isinstance(content, list):
-            text_parts = [
-                item.get("text", "") if isinstance(item, dict) else str(item)
-                for item in content
-            ]
-            content = " ".join(text_parts).strip()
+        content = _flatten_message_content(last.content)
     else:
         role = "agent"
         content = last.get("content") if isinstance(last, dict) else str(last)
@@ -439,10 +500,21 @@ def save_agent_output(state: State):
             session_id=session_id,
             role=role,
             content=content,
-            user_email=user_email,   # ⬅️ también se liga al mismo email
+            user_email=user_email,
         )
     except Exception as e:
         print(f"[save_agent_output] Error al guardar chat: {e}")
+
+    # === Generar título de sesión a partir del historial completo ===
+    try:
+        title = generate_session_title_from_history(msgs)
+    except Exception as e:
+        print(f"[save_agent_output] Error generando título de sesión: {e}")
+        title = None
+
+    if title:
+        # Esto se propagará hasta app.py como result["session_title"]
+        return {"session_title": title}
 
     return {}
 
@@ -537,8 +609,8 @@ graph.add_conditional_edges(
     check_after_identification_tools,
     {
         "identified": "save_user_input",
-        "continue_identifying": "identify_user",  # Volver a preguntar por más información
-        "await_user": END,  # Terminar y esperar respuesta del usuario
+        "continue_identifying": "identify_user",
+        "await_user": END,
     },
 )
 
@@ -606,7 +678,7 @@ tools_node = ToolNode(
     tools=[
         web_research,
         retrieve_context,
-        retrieve_robot_support,  # 🔁 descomenta si está definido como @tool
+        retrieve_robot_support,
         get_student_profile,
         update_student_goals,
         update_learning_style,
