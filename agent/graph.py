@@ -29,7 +29,7 @@ from Settings.tools import (
     update_learning_style,
     route_to,
     current_datetime,
-    _submit_chat_history,   # ← función que persiste en Supabase/DB
+    _submit_chat_history,   # función que persiste en Supabase/DB
     get_student_profile,
     check_user_exists,
     register_new_student,
@@ -48,13 +48,17 @@ def update_current_agent_stack(left: list[str], right: Optional[str]) -> list[st
     if isinstance(right, list):
         right_list = [r for r in right if isinstance(r, str)]
         if not right_list:
-            print("update_current_agent_stack: received empty/non-string list as right; ignoring")
+            print(
+                "update_current_agent_stack: received empty/non-string list as right; ignoring"
+            )
             return left
         return left + right_list
     if right == "pop":
         return left[:-1]
     if not isinstance(right, str):
-        print(f"update_current_agent_stack: unexpected type for right: {type(right)}; coercing to str")
+        print(
+            f"update_current_agent_stack: unexpected type for right: {type(right)}; coercing to str"
+        )
         return left + [str(right)]
     return left + [right]
 
@@ -102,7 +106,9 @@ class State(TypedDict, total=False):
 
 class CompleteOrEscalate(BaseModel):
     reason: str = Field(description="Motivo para finalizar o escalar.")
-    cancel: bool = Field(default=False, description="True=cierra; False=continúa/escalado.")
+    cancel: bool = Field(
+        default=False, description="True=cierra; False=continúa/escalado."
+    )
 
 
 # =========================
@@ -130,8 +136,8 @@ GENERAL_TOOLS = [
     get_student_profile,
     update_student_goals,
     update_learning_style,
-    retrieve_context,      # RAG estudiante + chat
-    summarize_all_chats,   # batch summary si se llama
+    retrieve_context,  # RAG estudiante + chat
+    summarize_all_chats,  # batch summary si se llama
     route_to,
     current_datetime,
 ]
@@ -183,21 +189,34 @@ lab_runnable = lab_prompt | lab_llm
 industrial_runnable = industrial_prompt | industrial_llm
 identification_runnable = identification_prompt | identification_llm
 
+# =========================
+# Nodos de agentes (no borran historial)
+# =========================
+def _invoke_runnable_as_messages(runnable, state: State) -> dict:
+    """Envuelve la salida del runnable como lista de mensajes nuevos."""
+    result = runnable.invoke(state)
+    if isinstance(result, list):
+        msgs = result
+    else:
+        msgs = [result]
+    # add_messages se encarga de anexar estos mensajes al historial
+    return {"messages": msgs}
+
 
 def general_agent_node(state: State):
-    return {"messages": general_runnable.invoke(state)}
+  return _invoke_runnable_as_messages(general_runnable, state)
 
 
 def education_agent_node(state: State):
-    return {"messages": education_runnable.invoke(state)}
+  return _invoke_runnable_as_messages(education_runnable, state)
 
 
 def lab_agent_node(state: State):
-    return {"messages": lab_runnable.invoke(state)}
+  return _invoke_runnable_as_messages(lab_runnable, state)
 
 
 def industrial_agent_node(state: State):
-    return {"messages": industrial_runnable.invoke(state)}
+  return _invoke_runnable_as_messages(industrial_runnable, state)
 
 
 # =========================
@@ -238,16 +257,26 @@ def identify_user_node(state: State):
         }
 
     result = identification_runnable.invoke(state)
-    return {"messages": result}
+    if isinstance(result, list):
+        msgs = result
+    else:
+        msgs = [result]
+    return {"messages": msgs}
 
 
-def check_identification_status(state: State) -> Literal["identified", "tools", "await_user"]:
+def check_identification_status(
+    state: State,
+) -> Literal["identified", "tools", "await_user"]:
     """
     Verifica el estado de identificación y decide el siguiente paso.
     """
     if not state.get("user_identified"):
         messages = state.get("messages", [])
-        if messages and hasattr(messages[-1], "tool_calls") and messages[-1].tool_calls:
+        if (
+            messages
+            and hasattr(messages[-1], "tool_calls")
+            and messages[-1].tool_calls
+        ):
             return "tools"
 
         if messages and hasattr(messages[-1], "type") and messages[-1].type == "ai":
@@ -258,13 +287,18 @@ def check_identification_status(state: State) -> Literal["identified", "tools", 
     messages = state.get("messages", [])
     if messages and hasattr(messages[-1], "type") and messages[-1].type == "ai":
         last_content = getattr(messages[-1], "content", "")
-        if "Ya te tengo identificado" in last_content or "¿En qué puedo ayudarte" in last_content:
+        if (
+            "Ya te tengo identificado" in last_content
+            or "¿En qué puedo ayudarte" in last_content
+        ):
             return "await_user"
 
     return "identified"
 
 
-def check_after_identification_tools(state: State) -> Literal["identified", "continue_identifying", "await_user"]:
+def check_after_identification_tools(
+    state: State,
+) -> Literal["identified", "continue_identifying", "await_user"]:
     """
     Después de usar herramientas de identificación, decide el siguiente paso.
     """
@@ -276,7 +310,10 @@ def check_after_identification_tools(state: State) -> Literal["identified", "con
         last_msg = messages[-1]
         if hasattr(last_msg, "type") and last_msg.type == "ai":
             content = getattr(last_msg, "content", "")
-            if "Ya te tengo identificado" in content or "¿En qué puedo ayudarte" in content:
+            if (
+                "Ya te tengo identificado" in content
+                or "¿En qué puedo ayudarte" in content
+            ):
                 return "await_user"
         return "identified"
 
@@ -300,7 +337,11 @@ def process_identification_tools(state: State):
     from langchain_core.messages import AIMessage, ToolMessage
 
     messages = state.get("messages", [])
-    if not messages or not hasattr(messages[-1], "tool_calls") or not messages[-1].tool_calls:
+    if (
+        not messages
+        or not hasattr(messages[-1], "tool_calls")
+        or not messages[-1].tool_calls
+    ):
         return {}
 
     tool_call = messages[-1].tool_calls[0]
@@ -310,7 +351,6 @@ def process_identification_tools(state: State):
 
     result_content = ""
     email = None
-    full_name = None
 
     try:
         if tool_name == "check_user_exists":
@@ -318,7 +358,6 @@ def process_identification_tools(state: State):
             result_content = check_user_exists.invoke({"email": email})
         elif tool_name == "register_new_student":
             email = tool_args.get("email", "")
-            full_name = tool_args.get("full_name", "")
             result_content = register_new_student.invoke(tool_args)
         elif tool_name == "update_student_info":
             email = tool_args.get("email", "")
@@ -332,7 +371,9 @@ def process_identification_tools(state: State):
         if email:
             student = _fetch_student(email)
             if student:
-                profile_summary = get_student_profile.invoke({"name_or_email": email})
+                profile_summary = get_student_profile.invoke(
+                    {"name_or_email": email}
+                )
                 confirmation_msg = AIMessage(
                     content=(
                         f"¡Perfecto, {student.get('full_name', 'usuario')}! "
@@ -450,14 +491,15 @@ def save_user_input(state: State):
 def generate_session_title_from_history(messages: List[AnyMessage]) -> str:
     """
     Genera un título breve usando el primer mensaje del usuario.
-    (Procesamiento del agente, pero sin otra llamada al LLM.)
     """
     first_user_text = None
 
     for msg in messages:
         msg_type = getattr(msg, "type", None) or getattr(msg, "role", None)
         if msg_type in ("human", "user", "student"):
-            first_user_text = _flatten_message_content(getattr(msg, "content", ""))
+            first_user_text = _flatten_message_content(
+                getattr(msg, "content", "")
+            )
             if first_user_text:
                 break
 
@@ -528,22 +570,34 @@ def initial_routing(state: State) -> Literal["router"]:
 # =========================
 def _fallback_pick_agent(text: str) -> str:
     t = text.lower()
-    if re.search(r"\b(plc|robot|hmi|scada|opc|ladder|siemens|allen-bradley|automatización)\b", t):
+    if re.search(
+        r"\b(plc|robot|hmi|scada|opc|ladder|siemens|allen-bradley|automatización)\b",
+        t,
+    ):
         return "ToAgentIndustrial"
     if re.search(
-        r"\bnda|confidencial|alcance|categorías|clasificar info|laboratorio|experimento|sensor|muestra\b", t
+        r"\bnda|confidencial|alcance|categorías|clasificar info|laboratorio|experimento|sensor|muestra\b",
+        t,
     ):
         return "ToAgentLab"
-    if re.search(r"\bplan de estudios|tarea|examen|aprender|clase|curso|proyecto escolar|estudio\b", t):
+    if re.search(
+        r"\bplan de estudios|tarea|examen|aprender|clase|curso|proyecto escolar|estudio\b",
+        t,
+    ):
         return "ToAgentEducation"
-    if re.search(r"\bpartes|rfc|domicilio|contrato|datos de contacto|coordinador|registro\b", t):
+    if re.search(
+        r"\bpartes|rfc|domicilio|contrato|datos de contacto|coordinador|registro\b",
+        t,
+    ):
         return "ToAgentGeneral"
     return "ToAgentGeneral"
 
 
 def intitial_route_function(
     state: State,
-) -> Literal["ToAgentEducation", "ToAgentIndustrial", "ToAgentGeneral", "ToAgentLab", "__end__"]:
+) -> Literal[
+    "ToAgentEducation", "ToAgentIndustrial", "ToAgentGeneral", "ToAgentLab", "__end__"
+]:
     from langgraph.prebuilt import tools_condition
 
     tools = tools_condition(state)
@@ -553,7 +607,12 @@ def intitial_route_function(
     tool_calls = getattr(state["messages"][-1], "tool_calls", []) or []
     if tool_calls:
         name = tool_calls[0]["name"]
-        if name in {"ToAgentEducation", "ToAgentIndustrial", "ToAgentGeneral", "ToAgentLab"}:
+        if name in {
+            "ToAgentEducation",
+            "ToAgentIndustrial",
+            "ToAgentGeneral",
+            "ToAgentLab",
+        }:
             return name
 
     last_message = getattr(state["messages"][-1], "content", "")
@@ -563,19 +622,27 @@ def intitial_route_function(
 
 
 class ToAgentEducation(BaseModel):
-    reason: str = Field(description="Motivo de transferencia al agente educativo.")
+    reason: str = Field(
+        description="Motivo de transferencia al agente educativo."
+    )
 
 
 class ToAgentGeneral(BaseModel):
-    reason: str = Field(description="Motivo de transferencia al agente general.")
+    reason: str = Field(
+        description="Motivo de transferencia al agente general."
+    )
 
 
 class ToAgentLab(BaseModel):
-    reason: str = Field(description="Motivo de transferencia al agente de laboratorio.")
+    reason: str = Field(
+        description="Motivo de transferencia al agente de laboratorio."
+    )
 
 
 class ToAgentIndustrial(BaseModel):
-    reason: str = Field(description="Motivo de transferencia al agente industrial.")
+    reason: str = Field(
+        description="Motivo de transferencia al agente industrial."
+    )
 
 
 # =========================
@@ -627,9 +694,13 @@ class Assistant:
         self.runnable = runnable
 
     def __call__(self, state: State, config):
-        state = {**state}
+        # No tocamos messages previos, solo añadimos la nueva respuesta
         result = self.runnable.invoke(state)
-        return {"messages": result}
+        if isinstance(result, list):
+            msgs = result
+        else:
+            msgs = [result]
+        return {"messages": msgs}
 
 
 graph.add_node("router", Assistant(router_runnable))
@@ -652,17 +723,36 @@ def create_entry_node(assistant_name: str, current_agent: str) -> Callable:
 
         msg = ToolMessage(
             tool_call_id=tool_call_id,
-            content=f"Ahora eres {assistant_name}. Revisa el contexto y continúa con la intención del usuario.",
+            content=(
+                f"Ahora eres {assistant_name}. Revisa el contexto y continúa "
+                "con la intención del usuario."
+            ),
         )
-        return {"messages": [msg]} if ca is None else {"messages": [msg], "current_agent": ca}
+        return (
+            {"messages": [msg]}
+            if ca is None
+            else {"messages": [msg], "current_agent": ca}
+        )
 
     return entry_node
 
 
-graph.add_node("ToAgentEducation", create_entry_node("Agente Educativo", "education_agent_node"))
-graph.add_node("ToAgentGeneral", create_entry_node("Agente General", "general_agent_node"))
-graph.add_node("ToAgentLab", create_entry_node("Agente de Laboratorio", "lab_agent_node"))
-graph.add_node("ToAgentIndustrial", create_entry_node("Agente Industrial", "industrial_agent_node"))
+graph.add_node(
+    "ToAgentEducation",
+    create_entry_node("Agente Educativo", "education_agent_node"),
+)
+graph.add_node(
+    "ToAgentGeneral",
+    create_entry_node("Agente General", "general_agent_node"),
+)
+graph.add_node(
+    "ToAgentLab",
+    create_entry_node("Agente de Laboratorio", "lab_agent_node"),
+)
+graph.add_node(
+    "ToAgentIndustrial",
+    create_entry_node("Agente Industrial", "industrial_agent_node"),
+)
 
 graph.add_edge("ToAgentEducation", "education_agent_node")
 graph.add_edge("ToAgentGeneral", "general_agent_node")
@@ -690,7 +780,12 @@ tools_node = ToolNode(
 graph.add_node("tools", tools_node)
 
 # Después de cada agente: si hay tool_calls → ejecutar tools; si no, guardar output y terminar
-for agent in ["general_agent_node", "education_agent_node", "lab_agent_node", "industrial_agent_node"]:
+for agent in [
+    "general_agent_node",
+    "education_agent_node",
+    "lab_agent_node",
+    "industrial_agent_node",
+]:
     graph.add_conditional_edges(
         agent,
         tools_condition,
@@ -713,12 +808,16 @@ graph.add_conditional_edges("tools", return_to_current_agent)
 # =========================
 def pop_current_agent(state: State) -> dict:
     messages = []
-    if state.get("messages") and getattr(state["messages"][-1], "tool_calls", None):
+    if state.get("messages") and getattr(
+        state["messages"][-1], "tool_calls", None
+    ):
         tool_call_id = state["messages"][-1].tool_calls[0]["id"]
         messages.append(
             ToolMessage(
                 tool_call_id=tool_call_id,
-                content="Reanuda con el asistente principal. Continúa ayudando al usuario.",
+                content=(
+                    "Reanuda con el asistente principal. Continúa ayudando al usuario."
+                ),
             )
         )
     return {"current_agent": "pop", "messages": messages}
