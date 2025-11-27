@@ -11,8 +11,12 @@ from pathlib import Path
 
 from agent.graph import graph, State
 
+# ================== LANGGRAPH & MEMORIA ==================
+
 checkpointer = MemorySaver()
 compiled_graph = graph.compile(checkpointer=checkpointer)
+
+# ================== FASTAPI APP ==================
 
 app = FastAPI()
 
@@ -50,6 +54,9 @@ class UploadResponse(BaseModel):
     message: str
 
 
+# ================== ENDPOINTS BÁSICOS ==================
+
+
 @app.get("/")
 async def root():
     """Main Endpoint to check API status"""
@@ -77,6 +84,9 @@ async def health_check():
     }
 
 
+# ================== ENDPOINT SIMPLE /message ==================
+
+
 @app.get("/message")
 async def simple_message(
     mensaje: str,
@@ -86,14 +96,15 @@ async def simple_message(
 ):
     """
     Endpoint simple para enviar mensajes usando query params.
-    - session_id: UUID de la sesión de chat
+
+    - session_id: UUID de la sesión de chat (se usa como thread_id en LangGraph)
     - user_id: UUID de Supabase (auth.user.id)
-    - user_email: solo para contexto, NO se usa como user_id
+    - user_email: solo para contexto / tools
     """
     try:
         timezone = "America/Monterrey"
 
-        # 1) Resolver session_id (UUID para la sesión)
+        # 1) Resolver session_id (UUID para la sesión / thread_id)
         real_session_id = session_id or str(uuid.uuid4())
 
         # 2) Validar que user_id, si viene, parezca un UUID
@@ -108,10 +119,10 @@ async def simple_message(
         # 3) Usuario confiable si tenemos un UUID válido
         trusted_user = valid_user_id is not None
 
-        # 4) Config para el grafo (para LangGraph + nuestros tools)
+        # 4) Config para el grafo (LangGraph usa thread_id para la memoria)
         config = {
             "configurable": {
-                "thread_id": real_session_id,
+                "thread_id": real_session_id,  # 👈 memoria por conversación
                 "session_id": real_session_id,
             }
         }
@@ -135,8 +146,8 @@ async def simple_message(
         if trusted_user:
             initial_state["user_identified"] = True
 
-        # 6) Invocar grafo
-        result: State = compiled_graph.invoke(initial_state, config)
+        # 6) Invocar grafo (async, con memoria)
+        result: State = await compiled_graph.ainvoke(initial_state, config)
 
         messages = result.get("messages", [])
         agent_response = ""
@@ -151,6 +162,14 @@ async def simple_message(
             agent_response = (
                 "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo."
             )
+
+        # ===== OPCIONAL: TÍTULO DE SESIÓN GENERADO POR EL AGENTE =====
+        # Tu grafo puede poner un campo "session_title" en el State.
+        session_title = result.get("session_title")
+        if isinstance(session_title, str):
+            session_title = session_title.strip() or None
+        else:
+            session_title = None
 
         # ===== EXTRAER INFO DE TOOLS PARA EL PANEL DE DEBUG =====
         tool_events = []
@@ -169,6 +188,8 @@ async def simple_message(
         return {
             "response": agent_response,
             "session_id": real_session_id,
+            "session_title": session_title,      # 👈 para que el front actualice el título
+            "user_identified": trusted_user,
             "debug": debug_payload,
         }
 
@@ -177,6 +198,9 @@ async def simple_message(
             status_code=500,
             detail=f"Error processing the message: {str(e)}",
         )
+
+
+# ================== ENDPOINT UPLOAD ==================
 
 
 @app.post("/upload", response_model=UploadResponse)
@@ -214,6 +238,8 @@ async def upload_file(
             detail=f"Error uploading the file: {str(e)}",
         )
 
+
+# ================== MAIN ==================
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
