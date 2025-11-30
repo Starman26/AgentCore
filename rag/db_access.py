@@ -70,7 +70,7 @@ def retrieve_chat_summary(chat_id):
 
 def retrieve_img_context():
     """Retrieve all image contexts for semantic search"""
-    res = SB.table("manual_imgs").select(
+    res = SB.table("manual_images").select(
         "id", "pdf_id", "page", "caption", "tags", "phash"
     ).execute()
     
@@ -78,12 +78,16 @@ def retrieve_img_context():
     docs = []
     
     for row in rows:
+        # Convertir tags de lista a string para compatibilidad con ChromaDB
+        tags_list = row.get("tags", [])
+        tags_str = ", ".join(tags_list) if isinstance(tags_list, list) else str(tags_list)
+        
         metadata = {
-            "db_id": row.get("id"),      
-            "pdf_id": row.get("pdf_id"),  
-            "page": row.get("page"),        
-            "phash": row.get("phash"),  #img_id    
-            "tags": row.get("tags", []),     
+            "db_id": str(row.get("id", "")),      
+            "pdf_id": str(row.get("pdf_id", "")),  
+            "page": int(row.get("page", 0)) if row.get("page") is not None else 0,        
+            "phash": str(row.get("phash", "")),  #img_id    
+            "tags": tags_str,  # Convertido a string
             "source": "manual_image"          
         }
         
@@ -91,7 +95,7 @@ def retrieve_img_context():
             Image description: {row.get('caption', '')}
             PDF: {row.get('pdf_id', '')}
             Page: {row.get('page', '')}
-            Tags: {', '.join(row.get('tags', []))}"""
+            Tags: {tags_str}"""
             
         docs.append(Document(page_content=content, metadata=metadata))
         

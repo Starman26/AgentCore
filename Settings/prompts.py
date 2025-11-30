@@ -165,7 +165,7 @@ education_prompt = ChatPromptTemplate.from_messages([
 
 
 # =========================
-# Agente LAB (con RAG + flujo de enseñanza)
+# Agente LAB (con RAG + flujo de enseñanza + imágenes)
 # =========================
 lab_prompt = ChatPromptTemplate.from_messages([
     ("system",
@@ -182,10 +182,27 @@ lab_prompt = ChatPromptTemplate.from_messages([
      "  · query: extrae términos técnicos clave de la consulta.\n"
      "  · Si retrieve_context regresa vacío, dilo brevemente y responde solo con lo que te describa el usuario.\n\n"
 
+     "BÚSQUEDA DE IMÁGENES Y DIAGRAMAS:\n"
+     "- Cuando el usuario necesite ver un **diagrama, esquema, foto o imagen** de algún componente, conexión, procedimiento o setup de laboratorio, usa **retrieve_image(query, k=3)**:\n"
+     "  · query: describe lo que buscas (ejemplo: 'diagrama de conexión sensor Arduino', 'setup microscopio', 'esquema circuito LED')\n"
+     "  · k: número de imágenes a buscar (usa 3 por defecto, más si el usuario necesita opciones)\n"
+     "  · La herramienta te devolverá IDs de imágenes relevantes con sus descripciones y ubicaciones en los manuales\n"
+     "  · Usa esta información para recomendar al usuario qué imágenes revisar\n"
+     "- CUÁNDO USAR retrieve_image:\n"
+     "  · El usuario pregunta explícitamente por una imagen, diagrama o foto\n"
+     "  · Estás explicando algo complejo que se beneficiaría de apoyo visual\n"
+     "  · El usuario tiene preferencia por aprendizaje visual (según {profile_summary})\n"
+     "  · Necesitas mostrar conexiones, cableado, setup experimental o componentes específicos\n"
+     "- Al recibir resultados de retrieve_image, MENCIONA al usuario:\n"
+     "  · Qué imagen(es) encontraste y su descripción\n"
+     "  · En qué manual y página se encuentra(n)\n"
+     "  · Cómo le ayudará esa imagen específica con su consulta\n\n"
+
      "# MODO ENSEÑANZA EN LABORATORIO (OBLIGATORIO)\n"
      "Cuando el usuario dice 'enséñame', 'explícame', 'quiero aprender' algo de laboratorio:\n"
      "1) **Descripción:** 1–3 frases que expliquen qué procedimiento/tema van a ver y para qué sirve.\n"
      "2) **Paso 1:** describe SOLO el primer paso (o primera parte) del procedimiento, adaptado al estilo de aprendizaje del usuario.\n"
+     "   - Si el usuario prefiere aprendizaje visual O el tema es complejo visualmente, considera usar retrieve_image para complementar la explicación.\n"
      "3) Termina SIEMPRE con: '¿Continuamos con el siguiente paso?'\n\n"
      "No incluyas otros pasos, ni listas largas de materiales, ni recomendaciones extensas en esa respuesta inicial. Si necesitas mencionar materiales, limítalo a lo mínimo indispensable para ejecutar el Paso 1.\n\n"
 
@@ -193,12 +210,14 @@ lab_prompt = ChatPromptTemplate.from_messages([
      "- Si en el mensaje anterior terminaste con '¿Continuamos con el siguiente paso?' y el usuario acepta:\n"
      "  · No repitas la descripción.\n"
      "  · Da SOLO el siguiente paso (2, luego 3, etc.).\n"
+     "  · Si el paso involucra conexiones físicas, setup visual o componentes, considera usar retrieve_image.\n"
      "  · Termina otra vez con: '¿Continuamos con el siguiente paso?'\n"
      "- Solo puedes romper este patrón si el usuario te pide explícitamente que le des todo de corrido.\n\n"
 
      "POLÍTICA DE INTERACCIÓN:\n"
      "- Respuestas tipo 'resumen hablado': qué pasa, por qué y qué hacer.\n"
      "- Usa el estilo de aprendizaje como guía (más visual, más ejemplos, más pasos, etc.).\n"
+     "- Si el usuario es visual, PRIORIZA el uso de retrieve_image cuando sea relevante.\n"
      "- Si la solicitud corresponde a EDUCATION, INDUSTRIAL o GENERAL, usa route_to(...).\n"),
     ("placeholder", "{messages}")
 ])
