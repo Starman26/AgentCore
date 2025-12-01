@@ -79,6 +79,15 @@ class State(TypedDict, total=False):
     now_local: str
     now_human: str
 
+    # 🎨 Estilo del avatar (texto que usan los prompts)
+    avatar_style: Optional[str]
+
+    # Config del widget/selector de avatar (puede venir del frontend)
+    widget_avatar_id: Optional[str]      # "cat" | "robot" | "duck" | "lab" | "astro" | "cora"
+    widget_mode: Optional[str]           # "default" | "custom"
+    widget_personality: Optional[str]
+    widget_notes: Optional[str]
+
     # Pila de agentes activos
     current_agent: Annotated[
         List[
@@ -109,6 +118,97 @@ class CompleteOrEscalate(BaseModel):
     cancel: bool = Field(
         default=False, description="True=cierra; False=continúa/escalado."
     )
+
+
+# =========================
+# Helper: construir estilo según avatar
+# =========================
+def build_avatar_style(
+    student: Optional[dict],
+    override_avatar_id: Optional[str] = None,
+    override_mode: Optional[str] = None,
+    override_personality: Optional[str] = None,
+    override_notes: Optional[str] = None,
+) -> str:
+    """
+    Devuelve un texto con instrucciones de estilo para el asistente según el
+    avatar seleccionado y, si existen, las personalizaciones guardadas
+    en la tabla students (widget_*).
+    """
+    student = student or {}
+
+    avatar_id = (
+        override_avatar_id
+        or student.get("widget_avatar_id")
+        or "cora"   # default
+    )
+    mode = override_mode or student.get("widget_mode") or "default"
+    custom_personality = (
+        override_personality
+        or student.get("widget_personality")
+        or ""
+    )
+    custom_notes = override_notes or student.get("widget_notes") or ""
+
+    # ===== estilos base por avatar =====
+    if avatar_id == "cat":
+        base_style = (
+            "Modo Gato Analítico:\n"
+            "- Tono cálido, paciente y explicativo.\n"
+            "- Explica paso a paso, sin prisa.\n"
+            "- Puedes cerrar respuestas con una frase corta gatuna, por ejemplo: 'miau 🐾', "
+            "sin abusar."
+        )
+    elif avatar_id == "robot":
+        base_style = (
+            "Modo Robot Industrial:\n"
+            "- Tono directo, técnico y orientado a KPIs.\n"
+            "- Respuestas concisas, con listas numeradas cuando ayuden.\n"
+            "- Puedes cerrar con algo tipo 'Proceso completado' de forma breve."
+        )
+    elif avatar_id == "duck":
+        base_style = (
+            "Modo Pato Caótico:\n"
+            "- Tono creativo, motivador y ligeramente caótico pero siempre claro.\n"
+            "- Usa ejemplos fuera de la caja.\n"
+            "- De forma ocasional puedes usar algo como 'cuack 🦆' al final, sin perder profesionalismo."
+        )
+    elif avatar_id == "lab":
+        base_style = (
+            "Modo Asistente de Lab:\n"
+            "- Tono metódico y clínico, como un colega de laboratorio.\n"
+            "- Estructura en pasos y menciona buenas prácticas y seguridad cuando apliquen.\n"
+            "- Puedes terminar con una pregunta del estilo '¿Lo probamos en el laboratorio?'."
+        )
+    elif avatar_id == "astro":
+        base_style = (
+            "Modo Explorador XR:\n"
+            "- Tono futurista y curioso.\n"
+            "- Usa ejemplos relacionados con VR/AR cuando ayuden a entender.\n"
+            "- Puedes cerrar alguna respuesta con algo tipo 'listo para la próxima misión 🚀'."
+        )
+    else:
+        # Default: Cora
+        base_style = (
+            "Modo Cora (básico):\n"
+            "- Tono profesional, amable y muy claro.\n"
+            "- Adapta la explicación al nivel del usuario sin sonar condescendiente."
+        )
+
+    extra = ""
+    if mode == "custom":
+        if custom_personality:
+            extra += (
+                "\n\nInstrucciones personalizadas de personalidad definidas por el usuario:\n"
+                f"{custom_personality}"
+            )
+        if custom_notes:
+            extra += (
+                "\n\nNotas adicionales del usuario sobre el comportamiento del asistente:\n"
+                f"{custom_notes}"
+            )
+
+    return base_style + extra
 
 
 # =========================
@@ -204,19 +304,19 @@ def _invoke_runnable_as_messages(runnable, state: State) -> dict:
 
 
 def general_agent_node(state: State):
-  return _invoke_runnable_as_messages(general_runnable, state)
+    return _invoke_runnable_as_messages(general_runnable, state)
 
 
 def education_agent_node(state: State):
-  return _invoke_runnable_as_messages(education_runnable, state)
+    return _invoke_runnable_as_messages(education_runnable, state)
 
 
 def lab_agent_node(state: State):
-  return _invoke_runnable_as_messages(lab_runnable, state)
+    return _invoke_runnable_as_messages(lab_runnable, state)
 
 
 def industrial_agent_node(state: State):
-  return _invoke_runnable_as_messages(industrial_runnable, state)
+    return _invoke_runnable_as_messages(industrial_runnable, state)
 
 
 # =========================
@@ -392,7 +492,7 @@ def process_identification_tools(state: State):
 
 
 # =========================
-# Nodo inicial: perfil + fecha/hora
+# Nodo inicial: perfil + fecha/hora + estilo de avatar
 # =========================
 def _inject_time_fields(state: State) -> None:
     tz = state.get("tz") or "America/Monterrey"
@@ -409,7 +509,7 @@ def _inject_time_fields(state: State) -> None:
 
 def initial_node(state: State, config: RunnableConfig) -> State:
     """
-    Inyecta tiempo, session_id y asegura profile_summary por defecto.
+    Inyecta tiempo, session_id, perfil y avatar_style por defecto.
     """
     state = dict(state)
     _inject_time_fields(state)
@@ -425,11 +525,41 @@ def initial_node(state: State, config: RunnableConfig) -> State:
         if thread_id:
             state["session_id"] = thread_id
 
-    # Si el usuario ya está identificado, cargar su perfil
+    # Si el usuario ya está identificado, cargar su perfil completo
+    student = None
     if state.get("user_identified") and state.get("user_email"):
         user_info = state.get("user_email")
         summary = get_student_profile.invoke({"name_or_email": user_info})
         state["profile_summary"] = summary
+        try:
+            student = _fetch_student(user_info)
+        except Exception as e:
+            print(f"[initial_node] Error al traer student para avatar: {e}")
+
+    # Overrides que pueden venir del propio State o de config.configurable
+    configurable = config.get("configurable", {})
+    override_avatar_id = (
+        state.get("widget_avatar_id")
+        or configurable.get("avatar_id")
+    )
+    override_mode = state.get("widget_mode") or configurable.get("widget_mode")
+    override_personality = (
+        state.get("widget_personality")
+        or configurable.get("widget_personality")
+    )
+    override_notes = (
+        state.get("widget_notes")
+        or configurable.get("widget_notes")
+    )
+
+    # Construir y fijar avatar_style que usarán los prompts
+    state["avatar_style"] = build_avatar_style(
+        student=student,
+        override_avatar_id=override_avatar_id,
+        override_mode=override_mode,
+        override_personality=override_personality,
+        override_notes=override_notes,
+    )
 
     return state
 
