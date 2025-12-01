@@ -38,6 +38,12 @@ class ChatRequest(BaseModel):
     user_email: Optional[str] = None
     timezone: Optional[str] = "America/Monterrey"
 
+    # 👇 NUEVOS CAMPOS PARA EL WIDGET/AVATAR
+    avatar_id: Optional[str] = None          # "cat" | "robot" | "duck" | "lab" | "astro" | "cora"
+    widget_mode: Optional[str] = None        # "default" | "custom"
+    widget_personality: Optional[str] = None
+    widget_notes: Optional[str] = None
+
 
 class ChatResponse(BaseModel):
     response: str
@@ -93,6 +99,12 @@ async def simple_message(
     session_id: Optional[str] = None,
     user_id: Optional[str] = None,   # auth.user.id (UUID)
     user_email: Optional[str] = None,
+
+    # 👇 overrides opcionales para probar rápido desde URL
+    avatar_id: Optional[str] = None,
+    widget_mode: Optional[str] = None,
+    widget_personality: Optional[str] = None,
+    widget_notes: Optional[str] = None,
 ):
     """
     Endpoint simple para enviar mensajes usando query params.
@@ -131,6 +143,16 @@ async def simple_message(
         if user_email:
             config["configurable"]["user_email"] = user_email
 
+        # 👇 pasar overrides de avatar al configurable
+        if avatar_id:
+            config["configurable"]["avatar_id"] = avatar_id
+        if widget_mode:
+            config["configurable"]["widget_mode"] = widget_mode
+        if widget_personality:
+            config["configurable"]["widget_personality"] = widget_personality
+        if widget_notes:
+            config["configurable"]["widget_notes"] = widget_notes
+
         # 5) Estado inicial del grafo
         initial_state: State = {
             "messages": [HumanMessage(content=mensaje)],
@@ -142,6 +164,16 @@ async def simple_message(
             initial_state["user_id"] = valid_user_id
         if user_email:
             initial_state["user_email"] = user_email
+
+        # 👇 también guardamos los overrides en el State
+        if avatar_id:
+            initial_state["widget_avatar_id"] = avatar_id
+        if widget_mode:
+            initial_state["widget_mode"] = widget_mode
+        if widget_personality:
+            initial_state["widget_personality"] = widget_personality
+        if widget_notes:
+            initial_state["widget_notes"] = widget_notes
 
         if trusted_user:
             initial_state["user_identified"] = True
@@ -163,15 +195,14 @@ async def simple_message(
                 "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo."
             )
 
-        # ===== OPCIONAL: TÍTULO DE SESIÓN GENERADO POR EL AGENTE =====
-        # Tu grafo puede poner un campo "session_title" en el State.
+        # ===== TÍTULO DE SESIÓN, SI VIENE DEL GRAFO =====
         session_title = result.get("session_title")
         if isinstance(session_title, str):
             session_title = session_title.strip() or None
         else:
             session_title = None
 
-        # ===== EXTRAER INFO DE TOOLS PARA EL PANEL DE DEBUG =====
+        # ===== EXTRA: TOOL CALLS PARA DEBUG =====
         tool_events = []
         for msg in messages:
             tool_calls = getattr(msg, "tool_calls", None)
@@ -188,7 +219,7 @@ async def simple_message(
         return {
             "response": agent_response,
             "session_id": real_session_id,
-            "session_title": session_title,      # 👈 para que el front actualice el título
+            "session_title": session_title,
             "user_identified": trusted_user,
             "debug": debug_payload,
         }
@@ -197,6 +228,112 @@ async def simple_message(
         raise HTTPException(
             status_code=500,
             detail=f"Error processing the message: {str(e)}",
+        )
+
+
+# ================== ENDPOINT COMPLETO /chat (POST) ==================
+
+
+@app.post("/chat")
+async def chat_endpoint(payload: ChatRequest):
+    """
+    Endpoint principal que usa el modelo ChatRequest.
+    Aquí se usa desde tu Chat.tsx (POST /chat).
+    """
+    try:
+        timezone = payload.timezone or "America/Monterrey"
+
+        # 1) Resolver session_id
+        real_session_id = payload.session_id or str(uuid.uuid4())
+
+        # 2) Config para el grafo
+        config = {
+            "configurable": {
+                "thread_id": real_session_id,
+                "session_id": real_session_id,
+            }
+        }
+
+        if payload.user_email:
+            config["configurable"]["user_email"] = payload.user_email
+
+        # 👇 pasar configuración del widget/avatar
+        if payload.avatar_id:
+            config["configurable"]["avatar_id"] = payload.avatar_id
+        if payload.widget_mode:
+            config["configurable"]["widget_mode"] = payload.widget_mode
+        if payload.widget_personality:
+            config["configurable"]["widget_personality"] = payload.widget_personality
+        if payload.widget_notes:
+            config["configurable"]["widget_notes"] = payload.widget_notes
+
+        # 3) Estado inicial
+        initial_state: State = {
+            "messages": [HumanMessage(content=payload.message)],
+            "tz": timezone,
+            "session_id": real_session_id,
+        }
+
+        if payload.user_email:
+            initial_state["user_email"] = payload.user_email
+
+        # También guardamos los widget_* en el State
+        if payload.avatar_id:
+            initial_state["widget_avatar_id"] = payload.avatar_id
+        if payload.widget_mode:
+            initial_state["widget_mode"] = payload.widget_mode
+        if payload.widget_personality:
+            initial_state["widget_personality"] = payload.widget_personality
+        if payload.widget_notes:
+            initial_state["widget_notes"] = payload.widget_notes
+
+        # 4) Invocar grafo
+        result: State = await compiled_graph.ainvoke(initial_state, config)
+
+        messages = result.get("messages", [])
+        agent_response = ""
+
+        for msg in reversed(messages):
+            if getattr(msg, "type", None) == "ai":
+                agent_response = getattr(msg, "content", "")
+                break
+
+        if not agent_response:
+            agent_response = (
+                "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo."
+            )
+
+        session_title = result.get("session_title")
+        if isinstance(session_title, str):
+            session_title = session_title.strip() or None
+        else:
+            session_title = None
+
+        tool_events = []
+        for msg in messages:
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls:
+                tool_events.append(
+                    {
+                        "from": getattr(msg, "type", "unknown"),
+                        "tool_calls": tool_calls,
+                    }
+                )
+        debug_payload = {"tool_events": tool_events}
+
+        return {
+            "response": agent_response,
+            "session_id": real_session_id,
+            "session_title": session_title,
+            "user_identified": bool(payload.user_email),
+            "timestamp": datetime.now().isoformat(),
+            "debug": debug_payload,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing the chat message: {str(e)}",
         )
 
 
