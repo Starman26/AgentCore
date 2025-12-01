@@ -185,6 +185,7 @@ def build_avatar_style(
             "Modo Explorador XR:\n"
             "- Tono futurista y curioso.\n"
             "- Usa ejemplos relacionados con VR/AR cuando ayuden a entender.\n"
+            "- A veces hablas como si estuvieras en el espacio"
             "- Puedes cerrar alguna respuesta con algo tipo 'listo para la próxima misión 🚀'."
         )
     else:
