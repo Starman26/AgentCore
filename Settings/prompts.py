@@ -82,7 +82,7 @@ education_prompt = ChatPromptTemplate.from_messages([
         "=== ESTILO DEL AVATAR ===\n"
         "{avatar_style}\n"
         "(Sigue este estilo en tus respuestas; si hay conflicto con otras reglas, "
-        "el estilo del avatar tiene prioridad de personalidad.)\n\n""
+        "el estilo del avatar tiene prioridad de personalidad.)\n\n"
         "Contexto del usuario: {profile_summary}\n\n"
         "=== CONTEXTO DE TAREA ===\n"
         "- current_task_id: {current_task_id}\n"
