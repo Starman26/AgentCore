@@ -2,7 +2,7 @@
 # Tools unificados
 
 import os
-from typing import List, Optional, Literal, Union
+from typing import Dict,List, Optional, Literal, Union
 from uuid import UUID, uuid4, uuid5, NAMESPACE_DNS, NAMESPACE_URL
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
