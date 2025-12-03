@@ -22,6 +22,7 @@ from rag.rag_logic import (
 )
 from Settings.state import State  # solo para tipado opcional
 
+
 # ====================================================
 # Constantes
 # ====================================================
@@ -35,7 +36,10 @@ SB: Client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"
 
 _TAVILY_KEY = os.getenv("TAVILY_API_KEY")
 _tavily: Optional[TavilyClient] = TavilyClient(api_key=_TAVILY_KEY) if _TAVILY_KEY else None
-
+_QT_LLM = ChatOpenAI(
+    model="gpt-4o-mini",
+    temperature=0
+)
 
 class WebResearchInput(BaseModel):
     query: str = Field(..., description="Pregunta o tema a investigar")
@@ -73,7 +77,61 @@ def _fetch_student(name_or_email: str):
     rows = res.data or []
     return rows[0] if rows else None
 
+def _transform_query_for_rag(raw_query: str, student_row: Optional[Dict] = None) -> str:
+    """
+    Reescribe la consulta para RAG usando info del estudiante.
+    Si algo falla, regresa la consulta original.
+    """
+    try:
+        perfil = ""
+        if student_row:
+            skills = ", ".join(student_row.get("skills") or [])
+            goals = ", ".join(student_row.get("goals") or [])
+            interests = ", ".join(student_row.get("interests") or [])
+            carrera = student_row.get("career") or ""
+            perfil = (
+                f"Carrera: {carrera}\n"
+                f"Skills: {skills}\n"
+                f"Metas: {goals}\n"
+                f"Intereses: {interests}\n"
+            )
 
+        prompt = f"""
+Eres un asistente que reescribe consultas para un sistema RAG.
+Usa el perfil para hacer la pregunta más específica y técnica,
+pero SIN cambiar la intención.
+
+Perfil del estudiante:
+{perfil}
+
+Consulta original:
+\"\"\"{raw_query}\"\"\"
+
+
+Devuelve UNA sola consulta mejorada en una línea, sin explicaciones extra.
+"""
+        resp = _QT_LLM.invoke(prompt)
+        cleaned = (resp.content or "").strip()
+        return cleaned or raw_query
+    except Exception as e:
+        print("[_transform_query_for_rag] error:", e)
+        return raw_query
+
+
+def _semantic_search(vs, query: str, k: int = 3):
+    """
+    Búsqueda semántica explícita con MMR (diversidad).
+    Internamente Chroma embebe el query y compara contra el índice.
+    """
+    retriever = vs.as_retriever(
+        search_type="mmr",           # en lugar de similarity simple
+        search_kwargs={
+            "k": k,                  # docs finales
+            "fetch_k": max(8, 2 * k) # docs candidatos
+        },
+    )
+    return retriever.invoke(query)
+    
 def _normalize_session_id(session_id: Union[int, str, UUID]) -> str:
     """
     Normaliza cualquier session_id recibido a un UUID string válido.
@@ -579,6 +637,9 @@ def retrieve_context(name_or_email: str, chat_id: int, query: str) -> str:
     """
     Busca contexto relevante en la base vectorial asociada al ESTUDIANTE y al HISTORIAL DE CHAT,
     y devuelve pasajes útiles para responder una consulta técnica.
+    Ahora:
+    - transforma la query según el perfil
+    - usa búsqueda semántica avanzada (MMR)
     """
     print(f"RETRIEVE_CONTEXT: name={name_or_email}, chat_id={chat_id}, query={query}")
 
@@ -592,13 +653,16 @@ def retrieve_context(name_or_email: str, chat_id: int, query: str) -> str:
         f"{student_row.get('email')}"
     )
 
+    # 1) Transformar query para RAG
+    transformed_query = _transform_query_for_rag(query, student_row)
+    print(f"RAG transformed_query = {transformed_query}")
+
+    # 2) Vectorstores (perfil + historial) y búsqueda semántica avanzada
     student_vectorstore = general_student_db_use(name_or_email)
-    student_retriever = student_vectorstore.as_retriever(search_kwargs={"k": 2})
-    student_docs = student_retriever.invoke(query)
+    student_docs = _semantic_search(student_vectorstore, transformed_query, k=2)
 
     chat_vectorstore = general_chat_db_use(chat_id)
-    chat_retriever = chat_vectorstore.as_retriever(search_kwargs={"k": 2})
-    chat_docs = chat_retriever.invoke(query)
+    chat_docs = _semantic_search(chat_vectorstore, transformed_query, k=2)
 
     out: List[str] = []
     search_name = name_or_email.lower()
@@ -623,7 +687,7 @@ def retrieve_context(name_or_email: str, chat_id: int, query: str) -> str:
             f"prefiere aprender {' y '.join(prefs)}. {notes}"
         )
 
-    # Contexto del estudiante
+    # Contexto del estudiante (perfil)
     for d in student_docs:
         m = d.metadata or {}
         doc_name = (m.get("full_name") or "").lower()
@@ -654,6 +718,7 @@ def retrieve_context(name_or_email: str, chat_id: int, query: str) -> str:
     return result
 
 
+
 # ---- Tool RAG específico de RoboSupport ----
 @tool
 def retrieve_robot_support(query: str) -> str:
@@ -666,8 +731,8 @@ def retrieve_robot_support(query: str) -> str:
         return "RAG_EMPTY::No hay registros en RoboSupportDB."
 
     vs = create_or_update_vectorstore("robot_support", docs, len(docs))
-    retriever = vs.as_retriever(search_kwargs={"k": 3})
-    hits = retriever.invoke(query)
+    hits = _semantic_search(vs, query, k=3)
+
 
     if not hits:
         return (
