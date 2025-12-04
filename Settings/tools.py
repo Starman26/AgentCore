@@ -883,21 +883,210 @@ def update_student_info(
 
 
 # ====================================================
+# TOOLS PARA PRÁCTICAS (PROJECT_TASKS + TASK_STEPS)
+# ====================================================
+
+@tool
+def get_project_tasks(project_id: str) -> List[dict]:
+    """
+    Devuelve la lista de tasks (project_tasks) asociadas a un proyecto,
+    ordenadas por created_at (o por id si no existe created_at).
+    Úsalo para que el agente vea el mapa general de prácticas del proyecto.
+    """
+    try:
+        # Intentar ordenar por created_at; si no existe, Supabase marcará error en logs
+        res = (
+            SB.table("project_tasks")
+            .select("id, project_id, title, description, created_at")
+            .eq("project_id", project_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        print("[get_project_tasks] error:", e)
+        # Fallback simple: sin orden explícito
+        try:
+            res = (
+                SB.table("project_tasks")
+                .select("id, project_id, title, description")
+                .eq("project_id", project_id)
+                .execute()
+            )
+            return res.data or []
+        except Exception as e2:
+            print("[get_project_tasks fallback] error:", e2)
+            return []
+
+
+@tool
+def get_task_steps(task_id: str) -> List[dict]:
+    """
+    Devuelve los pasos (task_steps) de una task de práctica,
+    ordenados por step_number.
+    
+    Espera que la tabla task_steps tenga al menos:
+    - id
+    - task_id
+    - step_number (int)
+    - title
+    - description
+    - is_completed (bool, opcional)
+    """
+    try:
+        res = (
+            SB.table("task_steps")
+            .select("id, task_id, step_number, title, description, is_completed")
+            .eq("task_id", task_id)
+            .order("step_number", desc=False)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        print("[get_task_steps] error:", e)
+        return []
+
+
+@tool
+def complete_task_step(step_id: str) -> str:
+    """
+    Marca un paso de práctica (task_steps) como completado.
+    Útil cuando el estudiante termina un paso y el agente quiere registrar el avance.
+    """
+    try:
+        (
+            SB.table("task_steps")
+            .update(
+                {
+                    "is_completed": True,
+                    "completed_at": datetime.now(ZoneInfo("America/Monterrey")).isoformat(),
+                }
+            )
+            .eq("id", step_id)
+            .execute()
+        )
+        return "OK"
+    except Exception as e:
+        print("[complete_task_step] error:", e)
+        return f"ERROR:{e}"
+# ====================================================
+# TOOLS PARA IMÁGENES DE MANUALES / PRÁCTICAS
+# ====================================================
+
+@tool
+def get_task_step_images(
+    task_id: str,
+    step_number: Optional[int] = None,
+    limit: int = 5,
+) -> List[dict]:
+    """
+    Devuelve imágenes asociadas a una task de práctica (y opcionalmente a un paso concreto),
+    a partir de la tabla manual_images.
+
+    Se asume que manual_images tiene algunos de estos campos:
+    - id
+    - project_id (opcional)
+    - project_task_id o task_id
+    - step_number (opcional)
+    - title
+    - description
+    - tags
+    - image_url  (o storage_path)  -> URL o ruta pública
+    """
+    try:
+        q = (
+            SB.table("manual_images")
+            .select("*")
+            .eq("project_task_id", task_id)
+        )
+    except Exception:
+        # Fallback si el FK se llama task_id en vez de project_task_id
+        q = SB.table("manual_images").select("*").eq("task_id", task_id)
+
+    if step_number is not None:
+        try:
+            q = q.eq("step_number", step_number)
+        except Exception as e:
+            print("[get_task_step_images] step_number filter error:", e)
+
+    try:
+        res = q.limit(max(1, min(20, int(limit)))).execute()
+        return res.data or []
+    except Exception as e:
+        print("[get_task_step_images] error final:", e)
+        return []
+
+
+@tool
+def search_manual_images(
+    query: str,
+    robot_type: Optional[str] = None,
+    project_id: Optional[str] = None,
+    limit: int = 5,
+) -> List[dict]:
+    """
+    Busca imágenes en la tabla manual_images por texto (título/descripcion/tags)
+    y filtros opcionales (robot_type, project_id).
+
+    Úsalo cuando el agente quiera adjuntar una imagen de apoyo en una explicación
+    normal (no necesariamente en modo práctica).
+
+    Convención sugerida para el agente:
+    - Cuando quieras que el frontend muestre una imagen, incluye en tu respuesta
+      algo como: IMAGE::image_url::título o descripción corta.
+    """
+    try:
+        # Hacemos un select amplio para no depender de columnas exactas
+        q = SB.table("manual_images").select("*")
+
+        # Filtros por proyecto / tipo de robot si se proporcionan
+        if project_id:
+            try:
+                q = q.eq("project_id", project_id)
+            except Exception as e:
+                print("[search_manual_images] project_id filter error:", e)
+
+        if robot_type:
+            try:
+                q = q.ilike("robot_type", f"%{robot_type}%")
+            except Exception as e:
+                print("[search_manual_images] robot_type filter error:", e)
+
+        # Búsqueda textual básica sobre columnas típicas
+        # (ajusta si tus nombres reales cambian)
+        try:
+            q = q.or_(
+                "title.ilike.%{q}%,description.ilike.%{q}%,tags.ilike.%{q}%".format(
+                    q=query
+                )
+            )
+        except Exception as e:
+            print("[search_manual_images] OR ilike error:", e)
+
+        res = q.limit(max(1, min(20, int(limit)))).execute()
+        return res.data or []
+    except Exception as e:
+        print("[search_manual_images] error:", e)
+        return []
+
+# ====================================================
 # TOOL SETS
 # ====================================================
 LAB_TOOLS = [
-    retrieve_context,        # RAG estudiante + chat
-    retrieve_robot_support,  # RAG específico de RoboSupport
-    web_research,            # RAG web
+    retrieve_context,
+    retrieve_robot_support,
+    web_research,
+    search_manual_images,      
     route_to,
 ]
 
 GENERAL_TOOLS = [
-    get_student_profile,     # para construir profile_summary y estilo
+    get_student_profile,
     update_student_goals,
     update_learning_style,
     web_research,
-    retrieve_context,        # acceso a RAG global si lo necesita
+    retrieve_context,
+    search_manual_images,      
     route_to,
     summarize_all_chats,
 ]
@@ -906,7 +1095,12 @@ EDU_TOOLS = [
     get_student_profile,
     update_learning_style,
     web_research,
-    retrieve_context,        # usar RAG cuando explique temas ligados a proyectos previos
+    retrieve_context,
+    get_project_tasks,         
+    get_task_steps,          
+    get_task_step_images,     
+    search_manual_images,     
+    complete_task_step,       
     route_to,
 ]
 
