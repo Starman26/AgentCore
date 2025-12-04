@@ -754,10 +754,18 @@ def intitial_route_function(
 ]:
     from langgraph.prebuilt import tools_condition
 
+    # 0) Si es chat de práctica, fuerza educación
+    chat_type = (state.get("chat_type") or "").lower()
+    if chat_type == "practice":
+        print("[Router] chat_type='practice' → forzando ToAgentEducation")
+        return "ToAgentEducation"
+
+    # 1) Lógica normal de tools_condition
     tools = tools_condition(state)
     if tools == END:
         return END
 
+    # 2) Si el último mensaje tiene tool_calls de ruteo, respétalos
     tool_calls = getattr(state["messages"][-1], "tool_calls", []) or []
     if tool_calls:
         name = tool_calls[0]["name"]
@@ -769,6 +777,7 @@ def intitial_route_function(
         }:
             return name
 
+    # 3) Fallback por texto
     last_message = getattr(state["messages"][-1], "content", "")
     forced = _fallback_pick_agent(last_message)
     print(f"[Router fallback] No tool call detectada → Dirigiendo a {forced}")
