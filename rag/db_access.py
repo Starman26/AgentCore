@@ -1,6 +1,22 @@
+from supabase import create_client, Client
 from langchain_core.documents import Document
 import pandas as pd
-from Settings.tools import SB
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError(
+        "SUPABASE_URL o SUPABASE_KEY no están definidos. "
+        "Verifica tu .env o variables de entorno del contenedor."
+    )
+
+SB: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 
 def _fetch_student(name_or_email: str):
     q = name_or_email.strip()
