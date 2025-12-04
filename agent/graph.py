@@ -1,43 +1,45 @@
 """
 ===========================================================
-                CORE GRAPH – ORGANIZED VERSION
-        Assistant orchestration for multi-agent workflow
+                    CORE GRAPH – FINAL VERSION
 ===========================================================
-
-Este archivo concentra:
-- Definición del estado global
-- Tools por agente
-- Prompts por agente
-- Armado del grafo LangGraph
-- Router avanzado (con soporte para prácticas)
-- Mecanismos de identificación de usuario
-- Guardado de historial
-- Entrada/salida de agentes
+    Multi-Agent Orchestration for FrEDie
+    - User identification
+    - Multi-agent routing
+    - Practice-guided workflows
+    - Avatar-style adaptation
+    - Full chat history persistence
 ===========================================================
 """
 
 # ==========================================================
 # IMPORTS
 # ==========================================================
+from __future__ import annotations
 
+import os
+import re
+import locale
+from datetime import datetime
 from typing import List, Optional, Literal, Callable
+
+from zoneinfo import ZoneInfo
 from typing_extensions import TypedDict
 from pydantic.v1 import BaseModel, Field
-from datetime import datetime
-from zoneinfo import ZoneInfo
-import locale, os, re
 
+from dotenv import load_dotenv
+load_dotenv()
+
+# LangGraph
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import AnyMessage, add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from langchain_core.messages import ToolMessage, HumanMessage
-from langchain_core.runnables.config import RunnableConfig
+# LangChain
 from langchain_openai import ChatOpenAI
+from langchain_core.runnables.config import RunnableConfig
+from langchain_core.messages import ToolMessage
 
-from dotenv import load_dotenv; load_dotenv()
-
-# Prompts y tools internos
+# Prompts
 from Settings.prompts import (
     general_prompt,
     education_prompt,
@@ -47,68 +49,59 @@ from Settings.prompts import (
     agent_route_prompt,
 )
 
+# Tools
 from Settings.tools import (
-    web_research,
-    retrieve_context,
-    retrieve_robot_support,
-    update_student_goals,
-    update_learning_style,
-    register_new_student,
-    get_student_profile,
-    check_user_exists,
-    update_student_info,
-    _fetch_student,
-    route_to,
-    current_datetime,
-    summarize_all_chats,
+    web_research, retrieve_context, retrieve_robot_support,
+    update_student_goals, update_learning_style,
+    register_new_student, update_student_info,
+    check_user_exists, get_student_profile, _fetch_student,
+    summarize_all_chats, route_to, current_datetime,
     _submit_chat_history,
-    get_project_tasks,
-    get_task_steps,
-    get_task_step_images,
-    search_manual_images,
+    get_project_tasks, get_task_steps,
+    get_task_step_images, search_manual_images,
     complete_task_step,
 )
 
 # ==========================================================
-# STATE DEFINICIÓN PRINCIPAL
+# STATE
 # ==========================================================
 
 class State(TypedDict, total=False):
 
-    # --- Historial ---
+    # Histórico de mensajes
     messages: List[AnyMessage]
 
-    # --- Perfil / Identidad ---
+    # Identidad
     profile_summary: Optional[str]
     user_identified: Optional[bool]
     user_email: Optional[str]
     user_name: Optional[str]
 
-    # --- Sesión ---
+    # Sesión
     session_id: Optional[str]
     session_title: Optional[str]
 
-    # --- Tiempo ---
+    # Tiempo
     tz: str
     now_utc: str
     now_local: str
     now_human: str
 
-    # --- Avatar / Widget ---
+    # Avatar
     avatar_style: Optional[str]
     widget_avatar_id: Optional[str]
     widget_mode: Optional[str]
     widget_personality: Optional[str]
     widget_notes: Optional[str]
 
-    # --- Seguimiento del agente actual ---
+    # Stack de agentes
     current_agent: List[str]
 
-    # --- Identificación ---
+    # Identificación
     awaiting_user_info: Optional[str]
 
-    # --- Prácticas / Proyectos ---
-    chat_type: Optional[str]           # "practice", etc.
+    # Prácticas / proyectos
+    chat_type: Optional[str]
     project_id: Optional[str]
     current_task_id: Optional[str]
     current_step_number: Optional[int]
@@ -116,11 +109,10 @@ class State(TypedDict, total=False):
 
 
 # ==========================================================
-# HELPERS DE STATE
+# HELPERS
 # ==========================================================
 
 def update_current_agent_stack(stack: List[str], new: Optional[str]):
-    """Push/pop del stack de agentes."""
     if new == "pop":
         return stack[:-1]
     if isinstance(new, str):
@@ -128,8 +120,7 @@ def update_current_agent_stack(stack: List[str], new: Optional[str]):
     return stack
 
 
-def _flatten(content):
-    """Convierte mensajes estructurados en texto plano."""
+def _flatten(content) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -138,11 +129,13 @@ def _flatten(content):
 
 
 # ==========================================================
-# ESTILO POR AVATAR
+# AVATAR STYLE GENERATOR
 # ==========================================================
 
-def build_avatar_style(student=None, override_avatar_id=None,
-                       override_mode=None, override_personality=None,
+def build_avatar_style(student=None,
+                       override_avatar_id=None,
+                       override_mode=None,
+                       override_personality=None,
                        override_notes=None) -> str:
 
     student = student or {}
@@ -156,12 +149,12 @@ def build_avatar_style(student=None, override_avatar_id=None,
         "cat": (
             "Modo Gato Analítico:\n"
             "- Tono cálido, claro y ordenado.\n"
-            "- Puedes usar analogías suaves con gatos si aportan claridad."
+            "- Analogías suaves con gatos SOLO cuando aporten claridad."
         ),
         "robot": (
             "Modo Robot Industrial:\n"
-            "- Tono técnico, preciso y directo.\n"
-            "- Prefiere pasos cuando es útil."
+            "- Tono preciso y directo.\n"
+            "- Prefiere explicación en pasos cuando aporta valor."
         ),
         "duck": (
             "Modo Pato Creativo:\n"
@@ -171,16 +164,16 @@ def build_avatar_style(student=None, override_avatar_id=None,
         "lab": (
             "Modo Asistente de Laboratorio:\n"
             "- Tono metódico y técnico.\n"
-            "- Prefiere procesos paso a paso."
+            "- Prioriza claridad experimental."
         ),
         "astro": (
             "Modo Explorador XR:\n"
             "- Tono futurista y curioso.\n"
-            "- Analiza usando metáforas espaciales cuando ayuden."
+            "- Usa metáforas espaciales solo cuando ayudan."
         ),
         "cora": (
             "Modo Cora Estándar:\n"
-            "- Tono profesional, amable y neutro."
+            "- Tono profesional y amable."
         ),
     }
 
@@ -201,7 +194,7 @@ def build_avatar_style(student=None, override_avatar_id=None,
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY no está configurada.")
+    raise RuntimeError("OPENAI_API_KEY no configurada.")
 
 llm = ChatOpenAI(
     model="gpt-4o-mini",
@@ -210,9 +203,8 @@ llm = ChatOpenAI(
     request_timeout=30,
 )
 
-
 # ==========================================================
-# DEFINICIÓN DE TOOLS POR AGENTE
+# TOOLS POR AGENTE
 # ==========================================================
 
 GENERAL_TOOLS = [
@@ -224,8 +216,8 @@ GENERAL_TOOLS = [
 EDU_TOOLS = [
     web_research, retrieve_context, update_learning_style,
     get_student_profile, get_project_tasks, get_task_steps,
-    get_task_step_images, search_manual_images, complete_task_step,
-    route_to, current_datetime,
+    get_task_step_images, search_manual_images,
+    complete_task_step, route_to, current_datetime,
 ]
 
 LAB_TOOLS = [
@@ -233,56 +225,47 @@ LAB_TOOLS = [
     route_to, current_datetime,
 ]
 
-IND_TOOLS = LAB_TOOLS[:]  # similar
-
+IND_TOOLS = LAB_TOOLS[:]
 
 IDENT_TOOLS = [
     check_user_exists, register_new_student, update_student_info
 ]
 
+# ==========================================================
+# RUNNABLES (PROMPT + TOOLS)
+# ==========================================================
+
+general_runnable = general_prompt | llm.bind_tools(GENERAL_TOOLS)
+education_runnable = education_prompt | llm.bind_tools(EDU_TOOLS)
+lab_runnable = lab_prompt | llm.bind_tools(LAB_TOOLS)
+industrial_runnable = industrial_prompt | llm.bind_tools(IND_TOOLS)
+identification_runnable = identification_prompt | llm.bind_tools(IDENT_TOOLS)
 
 # ==========================================================
-# RUNNABLES (prompt + tools)
-# ==========================================================
-
-general_llm = llm.bind_tools(GENERAL_TOOLS)
-education_llm = llm.bind_tools(EDU_TOOLS)
-lab_llm = llm.bind_tools(LAB_TOOLS)
-industrial_llm = llm.bind_tools(IND_TOOLS)
-identification_llm = llm.bind_tools(IDENT_TOOLS)
-
-general_runnable = general_prompt | general_llm
-education_runnable = education_prompt | education_llm
-lab_runnable = lab_prompt | lab_llm
-industrial_runnable = industrial_prompt | industrial_llm
-identification_runnable = identification_prompt | identification_llm
-
-
-# ==========================================================
-# NODOS DE AGENTES
+# AGENT NODES
 # ==========================================================
 
 def _invoke(runnable, state: State):
     out = runnable.invoke(state)
     return {"messages": out if isinstance(out, list) else [out]}
 
-def general_agent_node(state): return _invoke(general_runnable, state)
-def education_agent_node(state): return _invoke(education_runnable, state)
-def lab_agent_node(state): return _invoke(lab_runnable, state)
-def industrial_agent_node(state): return _invoke(industrial_runnable, state)
-
+def general_agent_node(state):     return _invoke(general_runnable, state)
+def education_agent_node(state):   return _invoke(education_runnable, state)
+def lab_agent_node(state):         return _invoke(lab_runnable, state)
+def industrial_agent_node(state):  return _invoke(industrial_runnable, state)
 
 # ==========================================================
-# IDENTIFICACIÓN DE USUARIO
+# IDENTIFICATION FLOW
 # ==========================================================
 
 def identify_user_node(state: State):
     if state.get("user_identified"):
         return {}
 
-    messages = state.get("messages", [])
+    messages = state.get("messages") or []
     already_asked = any(
-        "nombre" in getattr(m, "content", "").lower() and "correo" in getattr(m, "content", "").lower()
+        ("nombre" in getattr(m, "content", "").lower() and
+         "correo" in getattr(m, "content", "").lower())
         for m in messages if getattr(m, "type", "") == "ai"
     )
 
@@ -307,12 +290,9 @@ def process_identification_tools(state: State):
     call = msgs[-1].tool_calls[0]
     name, args, call_id = call["name"], call.get("args"), call["id"]
 
-    # ejecutar tool real
     result = globals()[name].invoke(args)
-
     tool_msg = ToolMessage(content=result, tool_call_id=call_id)
 
-    # Cuando la tool dice que el estudiante ya existe
     if "EXISTS" in result or result == "OK":
         email = args.get("email")
         student = _fetch_student(email)
@@ -347,35 +327,35 @@ def check_identification_status(state: State):
 def check_after_identification_tools(state: State):
     if state.get("user_identified"):
         return "identified"
+
     msgs = state.get("messages", [])
     last = msgs[-1] if msgs else None
     if last and getattr(last, "tool_calls", None):
         return "continue_identifying"
+
     return "await_user"
 
 
 # ==========================================================
-# NODO INICIAL
+# INITIAL NODE
 # ==========================================================
 
-def _inject_time_fields(state: State):
+def _inject_time(state: State):
     tz = state.get("tz") or "America/Monterrey"
     state["tz"] = tz
-
     try:
         locale.setlocale(locale.LC_TIME, "es_MX.UTF-8")
     except:
         pass
-
-    now_local = datetime.now(ZoneInfo(tz))
-    state["now_local"] = now_local.isoformat()
+    now = datetime.now(ZoneInfo(tz))
+    state["now_local"] = now.isoformat()
     state["now_utc"] = datetime.utcnow().isoformat() + "Z"
-    state["now_human"] = now_local.strftime("%A, %d %b %Y, %H:%M")
+    state["now_human"] = now.strftime("%A, %d %b %Y, %H:%M")
 
 
 def initial_node(state: State, config: RunnableConfig):
     state = dict(state)
-    _inject_time_fields(state)
+    _inject_time(state)
 
     if not state.get("profile_summary"):
         state["profile_summary"] = "Perfil aún no registrado."
@@ -383,7 +363,6 @@ def initial_node(state: State, config: RunnableConfig):
     if not state.get("session_id"):
         state["session_id"] = config.get("configurable", {}).get("thread_id")
 
-    # cargar estilo de avatar
     student = None
     if state.get("user_identified") and state.get("user_email"):
         summary = get_student_profile.invoke({"name_or_email": state["user_email"]})
@@ -393,91 +372,90 @@ def initial_node(state: State, config: RunnableConfig):
     conf = config.get("configurable", {})
     state["avatar_style"] = build_avatar_style(
         student,
-        override_avatar_id=state.get("widget_avatar_id") or conf.get("avatar_id"),
-        override_mode=state.get("widget_mode") or conf.get("widget_mode"),
-        override_personality=state.get("widget_personality") or conf.get("widget_personality"),
-        override_notes=state.get("widget_notes") or conf.get("widget_notes"),
+        override_avatar_id     = state.get("widget_avatar_id") or conf.get("avatar_id"),
+        override_mode          = state.get("widget_mode") or conf.get("widget_mode"),
+        override_personality   = state.get("widget_personality") or conf.get("widget_personality"),
+        override_notes         = state.get("widget_notes") or conf.get("widget_notes"),
     )
 
     return state
 
 
 # ==========================================================
-# GUARDADO DE HISTORIAL
+# HISTORY SAVING
 # ==========================================================
 
 def save_user_input(state: State):
     sid = state.get("session_id")
-    if not sid:
-        return {}
-
-    msgs = state.get("messages", [])
+    msgs = state.get("messages") or []
     last = msgs[-1] if msgs else None
+    if not sid or not last:
+        return {}
 
     role = "student" if getattr(last, "type", "") == "human" else "agent"
     content = _flatten(getattr(last, "content", ""))
 
     try:
-        _submit_chat_history(sid, role=role, content=content, user_email=state.get("user_email"))
-    except Exception as e:
-        print(f"[save_user_input] Error: {e}")
+        _submit_chat_history(sid, role, content, state.get("user_email"))
+    except:
+        pass
 
     return {}
 
-def generate_session_title_from_history(messages):
+
+def generate_session_title(messages: List[AnyMessage]):
     for m in messages:
         if getattr(m, "type", "") in ("human", "student", "user"):
             text = _flatten(getattr(m, "content", ""))
-            return (text[:60] + "…") if len(text) > 60 else text
+            return text[:60] + "…" if len(text) > 60 else text
     return "Sesión sin título"
+
 
 def save_agent_output(state: State):
     sid = state.get("session_id")
-    if not sid:
+    msgs = state.get("messages") or []
+    last = msgs[-1] if msgs else None
+    if not sid or not last:
         return {}
 
-    msgs = state.get("messages", [])
-    last = msgs[-1]
     content = _flatten(getattr(last, "content", ""))
 
     try:
-        _submit_chat_history(sid, role="agent", content=content, user_email=state.get("user_email"))
+        _submit_chat_history(sid, "agent", content, state.get("user_email"))
     except:
         pass
 
     try:
-        title = generate_session_title_from_history(msgs)
+        title = generate_session_title(msgs)
         return {"session_title": title}
     except:
         return {}
 
 
 # ==========================================================
-# ROUTER PRINCIPAL
+# ROUTER
 # ==========================================================
 
-def _fallback_pick_agent(text: str) -> str:
+def _fallback_pick_agent(text: str):
     t = text.lower()
     if re.search(r"\b(plc|robot|scada|hmi|opc)\b", t):
         return "ToAgentIndustrial"
-    if re.search(r"\b(laboratorio|muestra|sensor)\b", t):
+    if re.search(r"\b(laboratorio|muestra|sensor|nda|confidencial)\b", t):
         return "ToAgentLab"
-    if re.search(r"\b(estudio|clase|tarea|proyecto escolar)\b", t):
+    if re.search(r"\b(estudio|tarea|examen|proyecto escolar)\b", t):
         return "ToAgentEducation"
     return "ToAgentGeneral"
 
 
 def intitial_route_function(state: State):
-    # forzar prácticas → Education agent
+
     if (state.get("chat_type") or "").lower() == "practice":
         return "ToAgentEducation"
 
-    # tool condition
     if tools_condition(state) == END:
         return END
 
-    msgs = state["messages"]
-    last = msgs[-1]
+    last = state["messages"][-1]
     tool_calls = getattr(last, "tool_calls", [])
     if tool_calls:
         name = tool_calls[0]["name"]
@@ -487,20 +465,32 @@ def intitial_route_function(state: State):
     return _fallback_pick_agent(getattr(last, "content", ""))
 
 
+router_runnable = agent_route_prompt | llm.bind_tools(
+    ["ToAgentEducation", "ToAgentGeneral", "ToAgentLab", "ToAgentIndustrial"],
+    tool_choice="any",
+)
+
+class Assistant:
+    def __init__(self, runnable): self.r = runnable
+    def __call__(self, state: State, config):
+        out = self.r.invoke(state)
+        return {"messages": out if isinstance(out, list) else [out]}
+
+
 # ==========================================================
-# GRAFO PRINCIPAL
+# GRAPH ASSEMBLY
 # ==========================================================
 
 graph = StateGraph(State)
 
 graph.set_entry_point("initial_node")
 graph.add_node("initial_node", initial_node)
-
 graph.add_node("identify_user", identify_user_node)
 graph.add_node("identification_tools", process_identification_tools)
-
 graph.add_node("save_user_input", save_user_input)
 graph.add_node("save_agent_output", save_agent_output)
+
+graph.add_node("router", Assistant(router_runnable))
 
 graph.add_edge("initial_node", "identify_user")
 
@@ -527,24 +517,8 @@ graph.add_conditional_edges(
 graph.add_edge("save_user_input", "router")
 
 
-# Router Node
-router_runnable = agent_route_prompt | llm.bind_tools(
-    ["ToAgentEducation", "ToAgentGeneral", "ToAgentLab", "ToAgentIndustrial"],
-    tool_choice="any",
-)
-
-class Assistant:
-    def __init__(self, runnable): self.r = runnable
-    def __call__(self, state: State, config):
-        out = self.r.invoke(state)
-        return {"messages": out if isinstance(out, list) else [out]}
-
-graph.add_node("router", Assistant(router_runnable))
-graph.add_conditional_edges("router", intitial_route_function)
-
-
 # ==========================================================
-# AGENTE NODES
+# AGENT NODES & BRIDGES
 # ==========================================================
 
 graph.add_node("general_agent_node", general_agent_node)
@@ -552,26 +526,20 @@ graph.add_node("education_agent_node", education_agent_node)
 graph.add_node("lab_agent_node", lab_agent_node)
 graph.add_node("industrial_agent_node", industrial_agent_node)
 
-
-# Entradas por tool-call (bridge nodes)
-def create_entry_node(name, target):
-    def entry(state: State):
+def create_entry(name, target):
+    def entry(state):
         call_id = state["messages"][-1].tool_calls[0]["id"]
-        return {
-            "messages": [
-                ToolMessage(
-                    tool_call_id=call_id,
-                    content=f"Ahora eres {name}. Continúa con la intención del usuario."
-                )
-            ],
-            "current_agent": [target],
-        }
+        msg = ToolMessage(
+            tool_call_id=call_id,
+            content=f"Ahora eres {name}. Continúa con la intención del usuario."
+        )
+        return {"messages": [msg], "current_agent": [target]}
     return entry
 
-graph.add_node("ToAgentEducation", create_entry_node("Agente Educativo", "education_agent_node"))
-graph.add_node("ToAgentGeneral", create_entry_node("Agente General", "general_agent_node"))
-graph.add_node("ToAgentLab", create_entry_node("Agente de Laboratorio", "lab_agent_node"))
-graph.add_node("ToAgentIndustrial", create_entry_node("Agente Industrial", "industrial_agent_node"))
+graph.add_node("ToAgentEducation",  create_entry("Agente Educativo", "education_agent_node"))
+graph.add_node("ToAgentGeneral",    create_entry("Agente General", "general_agent_node"))
+graph.add_node("ToAgentLab",        create_entry("Agente de Laboratorio", "lab_agent_node"))
+graph.add_node("ToAgentIndustrial", create_entry("Agente Industrial", "industrial_agent_node"))
 
 graph.add_edge("ToAgentEducation", "education_agent_node")
 graph.add_edge("ToAgentGeneral", "general_agent_node")
@@ -580,7 +548,7 @@ graph.add_edge("ToAgentIndustrial", "industrial_agent_node")
 
 
 # ==========================================================
-# TOOLS NODE
+# TOOLS NODE + RETURN TO CURRENT AGENT
 # ==========================================================
 
 tools_node = ToolNode(tools=[
@@ -593,22 +561,37 @@ tools_node = ToolNode(tools=[
 
 graph.add_node("tools", tools_node)
 
-
-# Return to active agent
-def return_to_current_agent(state: State):
+def return_to_active(state: State):
     stack = state.get("current_agent") or []
     return stack[-1] if stack else "general_agent_node"
 
-for agent in [
-    "general_agent_node", "education_agent_node",
-    "lab_agent_node", "industrial_agent_node",
-]:
+for agent in ["general_agent_node", "education_agent_node", "lab_agent_node", "industrial_agent_node"]:
     graph.add_conditional_edges(
-        agent,
-        tools_condition,
+        agent, tools_condition,
         {"tools": "tools", "__end__": "save_agent_output"},
     )
 
-graph.add_conditional_edges("tools", return_to_current_agent)
+graph.add_conditional_edges("tools", return_to_active)
 graph.add_edge("save_agent_output", END)
 
+# ==========================================================
+# POP AGENT
+# ==========================================================
+
+def pop_current_agent(state: State):
+    msgs = []
+    if state.get("messages") and getattr(state["messages"][-1], "tool_calls", None):
+        call_id = state["messages"][-1].tool_calls[0]["id"]
+        msgs.append(
+            ToolMessage(
+                tool_call_id=call_id,
+                content="Regresando al asistente principal."
+            )
+        )
+    return {"current_agent": "pop", "messages": msgs}
+
+graph.add_node("leave_agent", pop_current_agent)
+
+# ==========================================================
+# END OF FILE
+# ==========================================================
