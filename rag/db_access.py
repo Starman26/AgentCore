@@ -1,9 +1,6 @@
-from supabase import create_client, Client
 from langchain_core.documents import Document
 import pandas as pd
-import os
-
-SB : Client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+from Settings.tools import SB
 
 def _fetch_student(name_or_email: str):
     q = name_or_email.strip()
