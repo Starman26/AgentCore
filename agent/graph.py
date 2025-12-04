@@ -111,6 +111,14 @@ class State(TypedDict, total=False):
 
     # Título de la sesión (para el frontend / Supabase)
     session_title: Optional[str]
+    
+    # ===== NUEVO: contexto de prácticas / proyecto =====
+    chat_type: Optional[str]          # "practice", "general", etc. viene de metadata
+    project_id: Optional[str]         # projects.id
+    current_task_id: Optional[str]    # project_tasks.id
+    current_step_number: Optional[int]
+    practice_completed: Optional[bool]
+    # ================================================
 
 
 class CompleteOrEscalate(BaseModel):
