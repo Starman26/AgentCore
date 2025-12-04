@@ -29,7 +29,7 @@ from Settings.tools import (
     update_learning_style,
     route_to,
     current_datetime,
-    _submit_chat_history,   # función que persiste en Supabase/DB
+    _submit_chat_history,
     get_student_profile,
     check_user_exists,
     register_new_student,
@@ -37,7 +37,13 @@ from Settings.tools import (
     _fetch_student,
     summarize_all_chats,
     retrieve_robot_support,
+    get_project_tasks,
+    get_task_steps,
+    get_task_step_images,
+    search_manual_images,
+    complete_task_step,
 )
+
 
 # =========================
 # Helpers para stack de agentes
@@ -263,7 +269,13 @@ EDU_TOOLS = [
     retrieve_context,
     route_to,
     current_datetime,
+    get_project_tasks,
+    get_task_steps,
+    get_task_step_images,
+    search_manual_images,
+    complete_task_step,
 ]
+
 
 # LAB: RAG técnico fuerte + soporte de robots
 LAB_TOOLS = [
@@ -917,8 +929,14 @@ tools_node = ToolNode(
         summarize_all_chats,
         route_to,
         current_datetime,
+        get_project_tasks,
+        get_task_steps,
+        get_task_step_images,
+        search_manual_images,
+        complete_task_step,
     ]
 )
+
 graph.add_node("tools", tools_node)
 
 # Después de cada agente: si hay tool_calls → ejecutar tools; si no, guardar output y terminar
