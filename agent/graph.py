@@ -465,9 +465,10 @@ def intitial_route_function(state: State):
     return _fallback_pick_agent(getattr(last, "content", ""))
 
 
+
 router_runnable = agent_route_prompt | llm.bind_tools(
-    ["ToAgentEducation", "ToAgentGeneral", "ToAgentLab", "ToAgentIndustrial"],
-    tool_choice="any",
+    [route_to],         # <--- herramienta REAL
+    tool_choice="required",
 )
 
 class Assistant:
