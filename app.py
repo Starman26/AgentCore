@@ -1,13 +1,14 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Tuple, Dict, Any,Optional
 import uuid
 from datetime import datetime
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
 import uvicorn
 from pathlib import Path
+from Settings.tools import SB 
 
 from agent.graph import graph, State
 
@@ -50,7 +51,30 @@ class ChatResponse(BaseModel):
     session_id: str
     user_identified: bool
     timestamp: str
-
+    
+def _load_session_metadata(session_id: str) -> Dict[str, Any]:
+    """
+    Lee metadata de chat_session para esta sesión.
+    Devuelve siempre un dict, aunque esté vacío.
+    """
+    try:
+        res = (
+            SB.table("chat_session")
+            .select("metadata")
+            .eq("id", session_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return {}
+        meta = rows[0].get("metadata") or {}
+        if not isinstance(meta, dict):
+            return {}
+        return meta
+    except Exception as e:
+        print(f"[app._load_session_metadata] Error leyendo metadata para {session_id}: {e}")
+        return {}
 
 class UploadResponse(BaseModel):
     filename: str
@@ -119,6 +143,12 @@ async def simple_message(
         # 1) Resolver session_id (UUID para la sesión / thread_id)
         real_session_id = session_id or str(uuid.uuid4())
 
+        # 1.b) Cargar metadata de la sesión (chat_type, project_id, etc.)
+        meta = _load_session_metadata(real_session_id)
+        chat_type = (meta.get("chat_type") or "default").lower()
+        project_id = meta.get("project_id")
+
+
         # 2) Validar que user_id, si viene, parezca un UUID
         valid_user_id: Optional[str] = None
         if user_id:
@@ -134,10 +164,13 @@ async def simple_message(
         # 4) Config para el grafo (LangGraph usa thread_id para la memoria)
         config = {
             "configurable": {
-                "thread_id": real_session_id,  # 👈 memoria por conversación
+                "thread_id": real_session_id,  # 
                 "session_id": real_session_id,
+                "chat_type": chat_type,
             }
         }
+        if project_id:
+            config["configurable"]["project_id"] = project_id
         if valid_user_id:
             config["configurable"]["user_id"] = valid_user_id
         if user_email:
@@ -158,8 +191,12 @@ async def simple_message(
             "messages": [HumanMessage(content=mensaje)],
             "tz": timezone,
             "session_id": real_session_id,
+            "chat_type": chat_type,
         }
 
+        if project_id:
+            initial_state["project_id"] = project_id
+        
         if valid_user_id:
             initial_state["user_id"] = valid_user_id
         if user_email:
@@ -246,14 +283,23 @@ async def chat_endpoint(payload: ChatRequest):
         # 1) Resolver session_id
         real_session_id = payload.session_id or str(uuid.uuid4())
 
+        # 1.b) Cargar metadata de la sesión
+        meta = _load_session_metadata(real_session_id)
+        chat_type = (meta.get("chat_type") or "default").lower()
+        project_id = meta.get("project_id")
+        
+
         # 2) Config para el grafo
         config = {
             "configurable": {
                 "thread_id": real_session_id,
                 "session_id": real_session_id,
+                "chat_type": chat_type,
             }
         }
 
+        if project_id:
+            config["configurable"]["project_id"] = project_id
         if payload.user_email:
             config["configurable"]["user_email"] = payload.user_email
 
@@ -272,7 +318,11 @@ async def chat_endpoint(payload: ChatRequest):
             "messages": [HumanMessage(content=payload.message)],
             "tz": timezone,
             "session_id": real_session_id,
+            "chat_type": chat_type,
         }
+        
+        if project_id:
+            initial_state["project_id"] = project_id
 
         if payload.user_email:
             initial_state["user_email"] = payload.user_email
