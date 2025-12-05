@@ -29,7 +29,7 @@ from Settings.tools import (
     update_learning_style,
     route_to,
     current_datetime,
-    _submit_chat_history,
+    _submit_chat_history,   # función que persiste en Supabase/DB
     get_student_profile,
     check_user_exists,
     register_new_student,
@@ -37,40 +37,30 @@ from Settings.tools import (
     _fetch_student,
     summarize_all_chats,
     retrieve_robot_support,
-    get_project_tasks,
-    get_task_steps,
-    get_task_step_images,
-    search_manual_images,
-    complete_task_step,
 )
-
 
 # =========================
 # Helpers para stack de agentes
 # =========================
-
-def update_current_agent_stack(left: list[str], right) -> list[str]:
-    """
-    Siempre mantiene una lista de agentes válidos.
-    """
+def update_current_agent_stack(left: list[str], right: Optional[str]) -> list[str]:
     if right is None:
         return left
-
-    # Si right ya es lista
     if isinstance(right, list):
-        valid = [x for x in right if isinstance(x, str)]
-        return left + valid
-
-    # pop
+        right_list = [r for r in right if isinstance(r, str)]
+        if not right_list:
+            print(
+                "update_current_agent_stack: received empty/non-string list as right; ignoring"
+            )
+            return left
+        return left + right_list
     if right == "pop":
-        return left[:-1] if left else []
-
-    # right debe ser string
-    if isinstance(right, str):
-        return left + [right]
-
-    # fallback
-    return left
+        return left[:-1]
+    if not isinstance(right, str):
+        print(
+            f"update_current_agent_stack: unexpected type for right: {type(right)}; coercing to str"
+        )
+        return left + [str(right)]
+    return left + [right]
 
 
 # =========================
@@ -121,14 +111,6 @@ class State(TypedDict, total=False):
 
     # Título de la sesión (para el frontend / Supabase)
     session_title: Optional[str]
-    
-    # ===== NUEVO: contexto de prácticas / proyecto =====
-    chat_type: Optional[str]          # "practice", "general", etc. viene de metadata
-    project_id: Optional[str]         # projects.id
-    current_task_id: Optional[str]    # project_tasks.id
-    current_step_number: Optional[int]
-    practice_completed: Optional[bool]
-    # ================================================
 
 
 class CompleteOrEscalate(BaseModel):
@@ -170,53 +152,52 @@ def build_avatar_style(
 
     # ===== estilos base por avatar =====
     if avatar_id == "cat":
-        base_style = (
-            "Modo Gato Analítico:\n"
-            "- Tono tranquilo, cálido y paciente.\n"
-            "- Prefiere explicaciones claras, ordenadas y con ejemplos cuando hagan falta.\n"
-            "- Puedes hacer referencias suaves a gatos (curiosidad, flexibilidad, etc.) solo cuando encaje de forma natural, "
-            "pero evita repetir siempre la misma palabra o sonido."
-        )
-    
+         base_style = (
+        "Modo Gato Analítico:\n"
+        "- Tono tranquilo, cálido y paciente.\n"
+        "- Prefiere explicaciones claras y ordenadas.\n"
+        "- Puede usar de forma ocasional una referencia ligera como 'miau', pero solo cuando encaje naturalmente."
+    )
+
     elif avatar_id == "robot":
-        base_style = (
-            "Modo Robot Industrial:\n"
-            "- Tono técnico, claro y directo.\n"
-            "- Prefiere listas y pasos cuando aportan claridad.\n"
-            "- No uses frases de cierre fijas; adapta el final según la situación."
-        )
-    
+           base_style = (
+        "Modo Robot Industrial:\n"
+        "- Tono técnico, claro y directo.\n"
+        "- Prefiere listas cuando aportan claridad.\n"
+        "- Puede cerrar de forma concisa cuando sea apropiado, sin necesidad de una frase fija."
+    )
+
     elif avatar_id == "duck":
-        base_style = (
-            "Modo Pato Creativo:\n"
-            "- Tono imaginativo, optimista y con buena energía.\n"
-            "- Usa ejemplos creativos pero mantén la precisión profesional.\n"
-            "- Puedes mencionar patos o usar humor ligero ocasionalmente, "
-            "pero sin repetir siempre 'cuack' ni un emoji específico."
-        )
-    
+           base_style = (
+        "Modo Pato Creativo:\n"
+        "- Tono imaginativo, optimista y con energía.\n"
+        "- Usa ejemplos diferentes, pero manteniendo claridad profesional.\n"
+        "- Puede incluir un 'cuack' ocasional, solo cuando tenga sentido y sin exagerar."
+    )
+
     elif avatar_id == "lab":
         base_style = (
-            "Modo Asistente de Laboratorio:\n"
-            "- Tono metódico, técnico y seguro.\n"
-            "- Prefiere pasos, orden y buenas prácticas.\n"
-            "- Puedes cerrar con una pregunta orientada a la acción cuando tenga sentido, no como obligación fija."
-        )
-    
+        "Modo Asistente de Laboratorio:\n"
+        "- Tono metódico, técnico y seguro.\n"
+        "- Prefiere pasos, orden y buenas prácticas.\n"
+        "- Puede terminar con una pregunta orientada a acción, si viene al caso, sin obligación."
+    )
+
     elif avatar_id == "astro":
         base_style = (
-            "Modo Explorador XR:\n"
-            "- Tono curioso, futurista y con analogías espaciales suaves.\n"
-            "- Usa referencias a exploración o misiones solo cuando aporten claridad.\n"
-            "- No repitas siempre la misma frase al final; mantén variedad natural."
-        )
+        "Modo Explorador XR:\n"
+        "- Tono curioso, futurista y con analogías espaciales SUAVES.\n"
+        "- Puede usar referencias discretas a exploración o misiones.\n"
+        "- Usa frases como 'preparado para continuar' solo cuando encaje de manera natural."
+    )
+
     else:
+        # Default: Cora
         base_style = (
             "Modo Cora (básico):\n"
             "- Tono profesional, amable y claro.\n"
             "- Priorizas neutralidad y precisión."
         )
-
     extra = ""
     if mode == "custom":
         if custom_personality:
@@ -273,13 +254,7 @@ EDU_TOOLS = [
     retrieve_context,
     route_to,
     current_datetime,
-    get_project_tasks,
-    get_task_steps,
-    get_task_step_images,
-    search_manual_images,
-    complete_task_step,
 ]
-
 
 # LAB: RAG técnico fuerte + soporte de robots
 LAB_TOOLS = [
@@ -546,34 +521,14 @@ def initial_node(state: State, config: RunnableConfig) -> State:
     if "profile_summary" not in state or state["profile_summary"] is None:
         state["profile_summary"] = "Perfil aún no registrado."
 
-    # =============================
-    # Normalizar campos de práctica
-    # =============================
-    if not state.get("project_id") or state["project_id"] in ["", " ", "null", "undefined"]:
-        state["project_id"] = None
-
-    if not state.get("current_task_id") or state["current_task_id"] in ["", " ", "null", "undefined"]:
-        state["current_task_id"] = None
-
-    if not state.get("current_step_number"):
-        state["current_step_number"] = 0
-
-    # Defaults seguros
-    state.setdefault("chat_type", "general")
-    state.setdefault("practice_completed", False)
-
-    # =============================
     # Conectar session_id con thread_id si viene desde config
-    # =============================
     if not state.get("session_id"):
         configurable = config.get("configurable", {})
         thread_id = configurable.get("thread_id")
         if thread_id:
             state["session_id"] = thread_id
 
-    # =============================
-    # Si el usuario ya está identificado, cargar perfil completo
-    # =============================
+    # Si el usuario ya está identificado, cargar su perfil completo
     student = None
     if state.get("user_identified") and state.get("user_email"):
         user_info = state.get("user_email")
@@ -584,9 +539,7 @@ def initial_node(state: State, config: RunnableConfig) -> State:
         except Exception as e:
             print(f"[initial_node] Error al traer student para avatar: {e}")
 
-    # =============================
-    # Overrides del widget
-    # =============================
+    # Overrides que pueden venir del propio State o de config.configurable
     configurable = config.get("configurable", {})
     override_avatar_id = (
         state.get("widget_avatar_id")
@@ -602,9 +555,7 @@ def initial_node(state: State, config: RunnableConfig) -> State:
         or configurable.get("widget_notes")
     )
 
-    # =============================
-    # Construir avatar_style
-    # =============================
+    # Construir y fijar avatar_style que usarán los prompts
     state["avatar_style"] = build_avatar_style(
         student=student,
         override_avatar_id=override_avatar_id,
@@ -614,7 +565,6 @@ def initial_node(state: State, config: RunnableConfig) -> State:
     )
 
     return state
-
 
 
 # =========================
@@ -776,28 +726,17 @@ def _fallback_pick_agent(text: str) -> str:
     return "ToAgentGeneral"
 
 
-# ============================================
-# Router (CORREGIDO)
-# ============================================
-def intitial_route_function(state: State):
-    """
-    Devuelve el nombre del nodo de entrada del agente correcto.
-    No modifica el stack aquí.
-    """
+def intitial_route_function(
+    state: State,
+) -> Literal[
+    "ToAgentEducation", "ToAgentIndustrial", "ToAgentGeneral", "ToAgentLab", "__end__"
+]:
     from langgraph.prebuilt import tools_condition
 
-    chat_type = (state.get("chat_type") or "").lower()
-
-    # Forzar prácticas
-    if chat_type == "practice":
-        return "ToAgentEducation"
-
-    # Herramientas activas
     tools = tools_condition(state)
     if tools == END:
         return END
 
-    # Tool calls explícitas
     tool_calls = getattr(state["messages"][-1], "tool_calls", []) or []
     if tool_calls:
         name = tool_calls[0]["name"]
@@ -809,10 +748,10 @@ def intitial_route_function(state: State):
         }:
             return name
 
-    # Fallback por texto
     last_message = getattr(state["messages"][-1], "content", "")
-    return _fallback_pick_agent(last_message)
-
+    forced = _fallback_pick_agent(last_message)
+    print(f"[Router fallback] No tool call detectada → Dirigiendo a {forced}")
+    return forced
 
 
 class ToAgentEducation(BaseModel):
@@ -907,23 +846,26 @@ graph.add_node("industrial_agent_node", industrial_agent_node)
 
 
 # ===== Nodos de entrada por tool-call del router =====
-# ============================================
-# Entry Nodes (CORREGIDO)
-# ============================================
-def create_entry_node(assistant_name: str, agent_node: str):
+def create_entry_node(assistant_name: str, current_agent: str) -> Callable:
     def entry_node(state: State) -> dict:
         tool_call_id = state["messages"][-1].tool_calls[0]["id"]
+        ca = current_agent
+        if isinstance(ca, list):
+            ca_list = [x for x in ca if isinstance(x, str)]
+            ca = ca_list[-1] if ca_list else None
 
         msg = ToolMessage(
             tool_call_id=tool_call_id,
-            content=f"Ahora eres {assistant_name}. Revisa el contexto y continúa con la intención del usuario."
+            content=(
+                f"Ahora eres {assistant_name}. Revisa el contexto y continúa "
+                "con la intención del usuario."
+            ),
         )
-
-        # Actualizar stack correctamente
-        return {
-            "messages": [msg],
-            "current_agent": [agent_node]  # siempre lista
-        }
+        return (
+            {"messages": [msg]}
+            if ca is None
+            else {"messages": [msg], "current_agent": ca}
+        )
 
     return entry_node
 
@@ -944,7 +886,6 @@ graph.add_node(
     "ToAgentIndustrial",
     create_entry_node("Agente Industrial", "industrial_agent_node"),
 )
-
 
 graph.add_edge("ToAgentEducation", "education_agent_node")
 graph.add_edge("ToAgentGeneral", "general_agent_node")
@@ -967,14 +908,8 @@ tools_node = ToolNode(
         summarize_all_chats,
         route_to,
         current_datetime,
-        get_project_tasks,
-        get_task_steps,
-        get_task_step_images,
-        search_manual_images,
-        complete_task_step,
     ]
 )
-
 graph.add_node("tools", tools_node)
 
 # Después de cada agente: si hay tool_calls → ejecutar tools; si no, guardar output y terminar
@@ -993,14 +928,10 @@ for agent in [
 graph.add_edge("save_agent_output", END)
 
 
-# ============================================
-# Return to current agent (CORREGIDO)
-# ============================================
+# Volver desde "tools" al agente que está en la cima del stack
 def return_to_current_agent(state: State) -> str:
     stack = state.get("current_agent") or []
-    if not stack:
-        return "general_agent_node"
-    return stack[-1]
+    return stack[-1] if stack else "general_agent_node"
 
 
 graph.add_conditional_edges("tools", return_to_current_agent)
