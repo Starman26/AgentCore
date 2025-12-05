@@ -1,13 +1,14 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Tuple, Dict, Any,Optional
 import uuid
 from datetime import datetime
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
 import uvicorn
 from pathlib import Path
+from Settings.tools import SB 
 
 from agent.graph import graph, State
 
@@ -36,12 +37,11 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     user_email: Optional[str] = None
-    user_id: Optional[str] = None          # 👈 NUEVO: UUID de Supabase
     timezone: Optional[str] = "America/Monterrey"
 
-    # 👇 CAMPOS DEL WIDGET/AVATAR
-    avatar_id: Optional[str] = None        # "cat" | "robot" | "duck" | "lab" | "astro" | "cora"
-    widget_mode: Optional[str] = None
+    # 👇 NUEVOS CAMPOS PARA EL WIDGET/AVATAR
+    avatar_id: Optional[str] = None          # "cat" | "robot" | "duck" | "lab" | "astro" | "cora"
+    widget_mode: Optional[str] = None        # "default" | "custom"
     widget_personality: Optional[str] = None
     widget_notes: Optional[str] = None
 
@@ -51,7 +51,30 @@ class ChatResponse(BaseModel):
     session_id: str
     user_identified: bool
     timestamp: str
-
+    
+def _load_session_metadata(session_id: str) -> Dict[str, Any]:
+    """
+    Lee metadata de chat_session para esta sesión.
+    Devuelve siempre un dict, aunque esté vacío.
+    """
+    try:
+        res = (
+            SB.table("chat_session")
+            .select("metadata")
+            .eq("id", session_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return {}
+        meta = rows[0].get("metadata") or {}
+        if not isinstance(meta, dict):
+            return {}
+        return meta
+    except Exception as e:
+        print(f"[app._load_session_metadata] Error leyendo metadata para {session_id}: {e}")
+        return {}
 
 class UploadResponse(BaseModel):
     filename: str
@@ -120,6 +143,12 @@ async def simple_message(
         # 1) Resolver session_id (UUID para la sesión / thread_id)
         real_session_id = session_id or str(uuid.uuid4())
 
+        # 1.b) Cargar metadata de la sesión (chat_type, project_id, etc.)
+        meta = _load_session_metadata(real_session_id)
+        chat_type = (meta.get("chat_type") or "default").lower()
+        project_id = meta.get("project_id")
+
+
         # 2) Validar que user_id, si viene, parezca un UUID
         valid_user_id: Optional[str] = None
         if user_id:
@@ -135,10 +164,13 @@ async def simple_message(
         # 4) Config para el grafo (LangGraph usa thread_id para la memoria)
         config = {
             "configurable": {
-                "thread_id": real_session_id,  # 👈 memoria por conversación
+                "thread_id": real_session_id,  # 
                 "session_id": real_session_id,
+                "chat_type": chat_type,
             }
         }
+        if project_id:
+            config["configurable"]["project_id"] = project_id
         if valid_user_id:
             config["configurable"]["user_id"] = valid_user_id
         if user_email:
@@ -159,8 +191,12 @@ async def simple_message(
             "messages": [HumanMessage(content=mensaje)],
             "tz": timezone,
             "session_id": real_session_id,
+            "chat_type": chat_type,
         }
 
+        if project_id:
+            initial_state["project_id"] = project_id
+        
         if valid_user_id:
             initial_state["user_id"] = valid_user_id
         if user_email:
@@ -226,7 +262,6 @@ async def simple_message(
         }
 
     except Exception as e:
-        print("[/message] ERROR:", repr(e))   # 👈 log extra
         raise HTTPException(
             status_code=500,
             detail=f"Error processing the message: {str(e)}",
@@ -248,27 +283,23 @@ async def chat_endpoint(payload: ChatRequest):
         # 1) Resolver session_id
         real_session_id = payload.session_id or str(uuid.uuid4())
 
-        # 2) Validar user_id como UUID (igual que en /message)
-        valid_user_id: Optional[str] = None
-        if payload.user_id:
-            try:
-                _ = uuid.UUID(payload.user_id)
-                valid_user_id = payload.user_id
-            except ValueError:
-                print(f"[chat] WARNING: user_id inválido: {payload.user_id}")
+        # 1.b) Cargar metadata de la sesión
+        meta = _load_session_metadata(real_session_id)
+        chat_type = (meta.get("chat_type") or "default").lower()
+        project_id = meta.get("project_id")
+        
 
-        trusted_user = valid_user_id is not None
-
-        # 3) Config para el grafo
+        # 2) Config para el grafo
         config = {
             "configurable": {
                 "thread_id": real_session_id,
                 "session_id": real_session_id,
+                "chat_type": chat_type,
             }
         }
 
-        if valid_user_id:
-            config["configurable"]["user_id"] = valid_user_id
+        if project_id:
+            config["configurable"]["project_id"] = project_id
         if payload.user_email:
             config["configurable"]["user_email"] = payload.user_email
 
@@ -282,18 +313,21 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.widget_notes:
             config["configurable"]["widget_notes"] = payload.widget_notes
 
-        # 4) Estado inicial
+        # 3) Estado inicial
         initial_state: State = {
             "messages": [HumanMessage(content=payload.message)],
             "tz": timezone,
             "session_id": real_session_id,
+            "chat_type": chat_type,
         }
+        
+        if project_id:
+            initial_state["project_id"] = project_id
 
-        if valid_user_id:
-            initial_state["user_id"] = valid_user_id
         if payload.user_email:
             initial_state["user_email"] = payload.user_email
 
+        # También guardamos los widget_* en el State
         if payload.avatar_id:
             initial_state["widget_avatar_id"] = payload.avatar_id
         if payload.widget_mode:
@@ -303,10 +337,7 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.widget_notes:
             initial_state["widget_notes"] = payload.widget_notes
 
-        if trusted_user:
-            initial_state["user_identified"] = True
-
-        # 5) Invocar grafo
+        # 4) Invocar grafo
         result: State = await compiled_graph.ainvoke(initial_state, config)
 
         messages = result.get("messages", [])
@@ -344,13 +375,12 @@ async def chat_endpoint(payload: ChatRequest):
             "response": agent_response,
             "session_id": real_session_id,
             "session_title": session_title,
-            "user_identified": trusted_user,
+            "user_identified": bool(payload.user_email),
             "timestamp": datetime.now().isoformat(),
             "debug": debug_payload,
         }
 
     except Exception as e:
-        print("[/chat] ERROR:", repr(e))   # 👈 log extra
         raise HTTPException(
             status_code=500,
             detail=f"Error processing the chat message: {str(e)}",
@@ -390,7 +420,6 @@ async def upload_file(
         )
 
     except Exception as e:
-        print("[/upload] ERROR:", repr(e))
         raise HTTPException(
             status_code=500,
             detail=f"Error uploading the file: {str(e)}",
