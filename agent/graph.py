@@ -545,6 +545,18 @@ def initial_node(state: State, config: RunnableConfig) -> State:
     # Valor por defecto para que los prompts del router/agentes no fallen
     if "profile_summary" not in state or state["profile_summary"] is None:
         state["profile_summary"] = "Perfil aún no registrado."
+    # Normalizar campos de práctica que llegan vacíos
+    if not state.get("project_id") or state["project_id"] in ["", " ", "null", "undefined"]:
+        state["project_id"] = None
+    
+    if not state.get("current_task_id") or state["current_task_id"] in ["", " ", "null", "undefined"]:
+        state["current_task_id"] = None
+    
+    if not state.get("current_step_number"):
+        state["current_step_number"] = 0
+
+state.setdefault("practice_completed", False)
+
 
     # Defaults para prácticas
     state.setdefault("chat_type", "general")
