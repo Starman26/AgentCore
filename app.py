@@ -35,6 +35,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+    user_id: Optional[str] = None
     user_email: Optional[str] = None
     timezone: Optional[str] = "America/Monterrey"
 
