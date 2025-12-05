@@ -165,6 +165,10 @@ async def simple_message(
         if user_email:
             initial_state["user_email"] = user_email
 
+        # ⚠ Fallback para user_name para que los prompts no truene
+        if "user_name" not in initial_state:
+            initial_state["user_name"] = user_email or "Usuario"
+
         # 👇 también guardamos los overrides en el State
         if avatar_id:
             initial_state["widget_avatar_id"] = avatar_id
@@ -177,6 +181,9 @@ async def simple_message(
 
         if trusted_user:
             initial_state["user_identified"] = True
+
+        # Pasar también user_name al configurable (por si algún nodo lo usa desde ahí)
+        config["configurable"]["user_name"] = initial_state["user_name"]
 
         # 6) Invocar grafo (async, con memoria)
         result: State = await compiled_graph.ainvoke(initial_state, config)
@@ -277,6 +284,10 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.user_email:
             initial_state["user_email"] = payload.user_email
 
+        # ⚠ Fallback para user_name
+        if "user_name" not in initial_state:
+            initial_state["user_name"] = payload.user_email or "Usuario"
+
         # También guardamos los widget_* en el State
         if payload.avatar_id:
             initial_state["widget_avatar_id"] = payload.avatar_id
@@ -286,6 +297,9 @@ async def chat_endpoint(payload: ChatRequest):
             initial_state["widget_personality"] = payload.widget_personality
         if payload.widget_notes:
             initial_state["widget_notes"] = payload.widget_notes
+
+        # Pasar también user_name al configurable
+        config["configurable"]["user_name"] = initial_state["user_name"]
 
         # 4) Invocar grafo
         result: State = await compiled_graph.ainvoke(initial_state, config)
