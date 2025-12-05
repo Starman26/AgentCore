@@ -35,13 +35,13 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
-    user_id: Optional[str] = None
     user_email: Optional[str] = None
+    user_id: Optional[str] = None          # 👈 NUEVO: UUID de Supabase
     timezone: Optional[str] = "America/Monterrey"
 
-    # 👇 NUEVOS CAMPOS PARA EL WIDGET/AVATAR
-    avatar_id: Optional[str] = None          # "cat" | "robot" | "duck" | "lab" | "astro" | "cora"
-    widget_mode: Optional[str] = None        # "default" | "custom"
+    # 👇 CAMPOS DEL WIDGET/AVATAR
+    avatar_id: Optional[str] = None        # "cat" | "robot" | "duck" | "lab" | "astro" | "cora"
+    widget_mode: Optional[str] = None
     widget_personality: Optional[str] = None
     widget_notes: Optional[str] = None
 
@@ -166,10 +166,6 @@ async def simple_message(
         if user_email:
             initial_state["user_email"] = user_email
 
-        # ⚠ Fallback para user_name para que los prompts no truene
-        if "user_name" not in initial_state:
-            initial_state["user_name"] = user_email or "Usuario"
-
         # 👇 también guardamos los overrides en el State
         if avatar_id:
             initial_state["widget_avatar_id"] = avatar_id
@@ -182,9 +178,6 @@ async def simple_message(
 
         if trusted_user:
             initial_state["user_identified"] = True
-
-        # Pasar también user_name al configurable (por si algún nodo lo usa desde ahí)
-        config["configurable"]["user_name"] = initial_state["user_name"]
 
         # 6) Invocar grafo (async, con memoria)
         result: State = await compiled_graph.ainvoke(initial_state, config)
@@ -233,6 +226,7 @@ async def simple_message(
         }
 
     except Exception as e:
+        print("[/message] ERROR:", repr(e))   # 👈 log extra
         raise HTTPException(
             status_code=500,
             detail=f"Error processing the message: {str(e)}",
@@ -254,16 +248,15 @@ async def chat_endpoint(payload: ChatRequest):
         # 1) Resolver session_id
         real_session_id = payload.session_id or str(uuid.uuid4())
 
-        # 2) Validar user_id como en /message
+        # 2) Validar user_id como UUID (igual que en /message)
         valid_user_id: Optional[str] = None
         if payload.user_id:
             try:
                 _ = uuid.UUID(payload.user_id)
                 valid_user_id = payload.user_id
             except ValueError:
-                print(f"[chat_endpoint] WARNING: user_id inválido: {payload.user_id}")
+                print(f"[chat] WARNING: user_id inválido: {payload.user_id}")
 
-        # usuario confiable si tenemos UUID válido
         trusted_user = valid_user_id is not None
 
         # 3) Config para el grafo
@@ -273,6 +266,7 @@ async def chat_endpoint(payload: ChatRequest):
                 "session_id": real_session_id,
             }
         }
+
         if valid_user_id:
             config["configurable"]["user_id"] = valid_user_id
         if payload.user_email:
@@ -300,11 +294,6 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.user_email:
             initial_state["user_email"] = payload.user_email
 
-        # 👈 MUY IMPORTANTE: marcar que el usuario ya está identificado
-        if trusted_user:
-            initial_state["user_identified"] = True
-
-        # también guardamos los widget_* en el State
         if payload.avatar_id:
             initial_state["widget_avatar_id"] = payload.avatar_id
         if payload.widget_mode:
@@ -313,6 +302,9 @@ async def chat_endpoint(payload: ChatRequest):
             initial_state["widget_personality"] = payload.widget_personality
         if payload.widget_notes:
             initial_state["widget_notes"] = payload.widget_notes
+
+        if trusted_user:
+            initial_state["user_identified"] = True
 
         # 5) Invocar grafo
         result: State = await compiled_graph.ainvoke(initial_state, config)
@@ -352,12 +344,13 @@ async def chat_endpoint(payload: ChatRequest):
             "response": agent_response,
             "session_id": real_session_id,
             "session_title": session_title,
-            "user_identified": trusted_user or bool(payload.user_email),
+            "user_identified": trusted_user,
             "timestamp": datetime.now().isoformat(),
             "debug": debug_payload,
         }
 
     except Exception as e:
+        print("[/chat] ERROR:", repr(e))   # 👈 log extra
         raise HTTPException(
             status_code=500,
             detail=f"Error processing the chat message: {str(e)}",
@@ -397,6 +390,7 @@ async def upload_file(
         )
 
     except Exception as e:
+        print("[/upload] ERROR:", repr(e))
         raise HTTPException(
             status_code=500,
             detail=f"Error uploading the file: {str(e)}",
