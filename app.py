@@ -253,14 +253,27 @@ async def chat_endpoint(payload: ChatRequest):
         # 1) Resolver session_id
         real_session_id = payload.session_id or str(uuid.uuid4())
 
-        # 2) Config para el grafo
+        # 2) Validar user_id como en /message
+        valid_user_id: Optional[str] = None
+        if payload.user_id:
+            try:
+                _ = uuid.UUID(payload.user_id)
+                valid_user_id = payload.user_id
+            except ValueError:
+                print(f"[chat_endpoint] WARNING: user_id inválido: {payload.user_id}")
+
+        # usuario confiable si tenemos UUID válido
+        trusted_user = valid_user_id is not None
+
+        # 3) Config para el grafo
         config = {
             "configurable": {
                 "thread_id": real_session_id,
                 "session_id": real_session_id,
             }
         }
-
+        if valid_user_id:
+            config["configurable"]["user_id"] = valid_user_id
         if payload.user_email:
             config["configurable"]["user_email"] = payload.user_email
 
@@ -274,21 +287,23 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.widget_notes:
             config["configurable"]["widget_notes"] = payload.widget_notes
 
-        # 3) Estado inicial
+        # 4) Estado inicial
         initial_state: State = {
             "messages": [HumanMessage(content=payload.message)],
             "tz": timezone,
             "session_id": real_session_id,
         }
 
+        if valid_user_id:
+            initial_state["user_id"] = valid_user_id
         if payload.user_email:
             initial_state["user_email"] = payload.user_email
 
-        # ⚠ Fallback para user_name
-        if "user_name" not in initial_state:
-            initial_state["user_name"] = payload.user_email or "Usuario"
+        # 👈 MUY IMPORTANTE: marcar que el usuario ya está identificado
+        if trusted_user:
+            initial_state["user_identified"] = True
 
-        # También guardamos los widget_* en el State
+        # también guardamos los widget_* en el State
         if payload.avatar_id:
             initial_state["widget_avatar_id"] = payload.avatar_id
         if payload.widget_mode:
@@ -298,10 +313,7 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.widget_notes:
             initial_state["widget_notes"] = payload.widget_notes
 
-        # Pasar también user_name al configurable
-        config["configurable"]["user_name"] = initial_state["user_name"]
-
-        # 4) Invocar grafo
+        # 5) Invocar grafo
         result: State = await compiled_graph.ainvoke(initial_state, config)
 
         messages = result.get("messages", [])
@@ -339,7 +351,7 @@ async def chat_endpoint(payload: ChatRequest):
             "response": agent_response,
             "session_id": real_session_id,
             "session_title": session_title,
-            "user_identified": bool(payload.user_email),
+            "user_identified": trusted_user or bool(payload.user_email),
             "timestamp": datetime.now().isoformat(),
             "debug": debug_payload,
         }
