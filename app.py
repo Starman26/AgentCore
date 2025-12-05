@@ -171,6 +171,7 @@ async def simple_message(
         if user_email:
             config["configurable"]["user_email"] = user_email
 
+        # 👉 AQUÍ SÍ podemos pasar avatar y widgets por config
         if avatar_id:
             config["configurable"]["avatar_id"] = avatar_id
         if widget_mode:
@@ -180,7 +181,7 @@ async def simple_message(
         if widget_notes:
             config["configurable"]["widget_notes"] = widget_notes
 
-        # Estado inicial para el grafo
+        # Estado inicial para el grafo (⚠️ SOLO claves que existen en State)
         initial_state: State = {
             "messages": [HumanMessage(content=mensaje)],
             "tz": timezone,
@@ -194,18 +195,10 @@ async def simple_message(
             initial_state["user_id"] = valid_user_id
         if user_email:
             initial_state["user_email"] = user_email
-
-        if avatar_id:
-            initial_state["widget_avatar_id"] = avatar_id
-        if widget_mode:
-            initial_state["widget_mode"] = widget_mode
-        if widget_personality:
-            initial_state["widget_personality"] = widget_personality
-        if widget_notes:
-            initial_state["widget_notes"] = widget_notes
-
         if trusted_user:
             initial_state["user_identified"] = True
+
+        # 👉 Nota: ya NO metemos widget_avatar_id / widget_* en initial_state
 
         # Ejecutar grafo
         result: State = await compiled_graph.ainvoke(initial_state, config)
@@ -226,7 +219,9 @@ async def simple_message(
         for msg in messages:
             tc = getattr(msg, "tool_calls", None)
             if tc:
-                tool_events.append({"from": getattr(msg, "type", None), "tool_calls": tc})
+                tool_events.append(
+                    {"from": getattr(msg, "type", None), "tool_calls": tc}
+                )
 
         return {
             "response": agent_response,
@@ -266,6 +261,7 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.user_email:
             config["configurable"]["user_email"] = payload.user_email
 
+        # 👉 Avatar y widgets SOLO en config
         if payload.avatar_id:
             config["configurable"]["avatar_id"] = payload.avatar_id
         if payload.widget_mode:
@@ -275,6 +271,7 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.widget_notes:
             config["configurable"]["widget_notes"] = payload.widget_notes
 
+        # Estado inicial para el grafo (otra vez, solo keys válidas)
         initial_state: State = {
             "messages": [HumanMessage(content=payload.message)],
             "tz": timezone,
@@ -287,14 +284,7 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.user_email:
             initial_state["user_email"] = payload.user_email
 
-        if payload.avatar_id:
-            initial_state["widget_avatar_id"] = payload.avatar_id
-        if payload.widget_mode:
-            initial_state["widget_mode"] = payload.widget_mode
-        if payload.widget_personality:
-            initial_state["widget_personality"] = payload.widget_personality
-        if payload.widget_notes:
-            initial_state["widget_notes"] = payload.widget_notes
+        # 👉 NO meter avatar/widget_* aquí para no romper el State
 
         result: State = await compiled_graph.ainvoke(initial_state, config)
 
@@ -312,7 +302,9 @@ async def chat_endpoint(payload: ChatRequest):
         for msg in messages:
             tc = getattr(msg, "tool_calls", None)
             if tc:
-                tool_events.append({"from": getattr(msg, "type", None), "tool_calls": tc})
+                tool_events.append(
+                    {"from": getattr(msg, "type", None), "tool_calls": tc}
+                )
 
         return {
             "response": agent_response,
@@ -323,8 +315,10 @@ async def chat_endpoint(payload: ChatRequest):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing the chat message: {str(e)}")
-
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing the chat message: {str(e)}",
+        )
 
 # ==========================================================
 # ENDPOINT UPLOAD
