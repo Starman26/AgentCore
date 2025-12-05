@@ -42,6 +42,7 @@ from Settings.tools import (
     get_task_step_images,
     search_manual_images,
     complete_task_step,
+    identify_user_from_message,
 )
 
 
@@ -258,6 +259,7 @@ GENERAL_TOOLS = [
     summarize_all_chats,  # batch summary si se llama
     route_to,
     current_datetime,
+    identify_user_from_message,
 ]
 
 # EDUCATION: perfil + estilo + RAG para enseñanza
@@ -274,6 +276,7 @@ EDU_TOOLS = [
     get_task_step_images,
     search_manual_images,
     complete_task_step,
+    identify_user_from_message,
 ]
 
 
@@ -285,6 +288,7 @@ LAB_TOOLS = [
     retrieve_robot_support,
     route_to,
     current_datetime,
+    identify_user_from_message,
 ]
 
 # INDUSTRIAL: similar a LAB
@@ -294,6 +298,7 @@ IND_TOOLS = [
     retrieve_context,
     retrieve_robot_support,
     current_datetime,
+    identify_user_from_message,
 ]
 
 # =========================
@@ -943,6 +948,7 @@ tools_node = ToolNode(
         get_task_step_images,
         search_manual_images,
         complete_task_step,
+        identify_user_from_message,
     ]
 )
 
