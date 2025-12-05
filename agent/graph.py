@@ -48,25 +48,29 @@ from Settings.tools import (
 # =========================
 # Helpers para stack de agentes
 # =========================
-def update_current_agent_stack(left: list[str], right: Optional[str]) -> list[str]:
+
+def update_current_agent_stack(left: list[str], right) -> list[str]:
+    """
+    Siempre mantiene una lista de agentes válidos.
+    """
     if right is None:
         return left
+
+    # Si right ya es lista
     if isinstance(right, list):
-        right_list = [r for r in right if isinstance(r, str)]
-        if not right_list:
-            print(
-                "update_current_agent_stack: received empty/non-string list as right; ignoring"
-            )
-            return left
-        return left + right_list
+        valid = [x for x in right if isinstance(x, str)]
+        return left + valid
+
+    # pop
     if right == "pop":
-        return left[:-1]
-    if not isinstance(right, str):
-        print(
-            f"update_current_agent_stack: unexpected type for right: {type(right)}; coercing to str"
-        )
-        return left + [str(right)]
-    return left + [right]
+        return left[:-1] if left else []
+
+    # right debe ser string
+    if isinstance(right, str):
+        return left + [right]
+
+    # fallback
+    return left
 
 
 # =========================
@@ -542,6 +546,14 @@ def initial_node(state: State, config: RunnableConfig) -> State:
     if "profile_summary" not in state or state["profile_summary"] is None:
         state["profile_summary"] = "Perfil aún no registrado."
 
+    # Defaults para prácticas
+    state.setdefault("chat_type", "general")
+    state.setdefault("project_id", None)
+    state.setdefault("current_task_id", None)
+    state.setdefault("current_step_number", None)
+    state.setdefault("practice_completed", False)
+
+
     # Conectar session_id con thread_id si viene desde config
     if not state.get("session_id"):
         configurable = config.get("configurable", {})
@@ -747,25 +759,28 @@ def _fallback_pick_agent(text: str) -> str:
     return "ToAgentGeneral"
 
 
-def intitial_route_function(
-    state: State,
-) -> Literal[
-    "ToAgentEducation", "ToAgentIndustrial", "ToAgentGeneral", "ToAgentLab", "__end__"
-]:
+# ============================================
+# Router (CORREGIDO)
+# ============================================
+def intitial_route_function(state: State):
+    """
+    Devuelve el nombre del nodo de entrada del agente correcto.
+    No modifica el stack aquí.
+    """
     from langgraph.prebuilt import tools_condition
 
-    # 0) Si es chat de práctica, fuerza educación
     chat_type = (state.get("chat_type") or "").lower()
+
+    # Forzar prácticas
     if chat_type == "practice":
-        print("[Router] chat_type='practice' → forzando ToAgentEducation")
         return "ToAgentEducation"
 
-    # 1) Lógica normal de tools_condition
+    # Herramientas activas
     tools = tools_condition(state)
     if tools == END:
         return END
 
-    # 2) Si el último mensaje tiene tool_calls de ruteo, respétalos
+    # Tool calls explícitas
     tool_calls = getattr(state["messages"][-1], "tool_calls", []) or []
     if tool_calls:
         name = tool_calls[0]["name"]
@@ -777,11 +792,10 @@ def intitial_route_function(
         }:
             return name
 
-    # 3) Fallback por texto
+    # Fallback por texto
     last_message = getattr(state["messages"][-1], "content", "")
-    forced = _fallback_pick_agent(last_message)
-    print(f"[Router fallback] No tool call detectada → Dirigiendo a {forced}")
-    return forced
+    return _fallback_pick_agent(last_message)
+
 
 
 class ToAgentEducation(BaseModel):
@@ -876,26 +890,23 @@ graph.add_node("industrial_agent_node", industrial_agent_node)
 
 
 # ===== Nodos de entrada por tool-call del router =====
-def create_entry_node(assistant_name: str, current_agent: str) -> Callable:
+# ============================================
+# Entry Nodes (CORREGIDO)
+# ============================================
+def create_entry_node(assistant_name: str, agent_node: str):
     def entry_node(state: State) -> dict:
         tool_call_id = state["messages"][-1].tool_calls[0]["id"]
-        ca = current_agent
-        if isinstance(ca, list):
-            ca_list = [x for x in ca if isinstance(x, str)]
-            ca = ca_list[-1] if ca_list else None
 
         msg = ToolMessage(
             tool_call_id=tool_call_id,
-            content=(
-                f"Ahora eres {assistant_name}. Revisa el contexto y continúa "
-                "con la intención del usuario."
-            ),
+            content=f"Ahora eres {assistant_name}. Revisa el contexto y continúa con la intención del usuario."
         )
-        return (
-            {"messages": [msg]}
-            if ca is None
-            else {"messages": [msg], "current_agent": ca}
-        )
+
+        # Actualizar stack correctamente
+        return {
+            "messages": [msg],
+            "current_agent": [agent_node]  # siempre lista
+        }
 
     return entry_node
 
@@ -916,6 +927,7 @@ graph.add_node(
     "ToAgentIndustrial",
     create_entry_node("Agente Industrial", "industrial_agent_node"),
 )
+
 
 graph.add_edge("ToAgentEducation", "education_agent_node")
 graph.add_edge("ToAgentGeneral", "general_agent_node")
@@ -964,10 +976,14 @@ for agent in [
 graph.add_edge("save_agent_output", END)
 
 
-# Volver desde "tools" al agente que está en la cima del stack
+# ============================================
+# Return to current agent (CORREGIDO)
+# ============================================
 def return_to_current_agent(state: State) -> str:
     stack = state.get("current_agent") or []
-    return stack[-1] if stack else "general_agent_node"
+    if not stack:
+        return "general_agent_node"
+    return stack[-1]
 
 
 graph.add_conditional_edges("tools", return_to_current_agent)
