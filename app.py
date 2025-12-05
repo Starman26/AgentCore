@@ -119,8 +119,7 @@ async def health_check():
 
 
 # ==========================================================
-# GET /message
-# (Usado por Chat.tsx en tu app)
+# GET /message  (Usado por Chat.tsx)
 # ==========================================================
 
 @app.get("/message")
@@ -155,8 +154,8 @@ async def simple_message(
 
         trusted_user = valid_user_id is not None
 
-        # Configurable para LangGraph
-        config = {
+        # ---------- CONFIGURABLE PARA LANGGRAPH ----------
+        config: Dict[str, Any] = {
             "configurable": {
                 "thread_id": real_session_id,
                 "session_id": real_session_id,
@@ -171,7 +170,7 @@ async def simple_message(
         if user_email:
             config["configurable"]["user_email"] = user_email
 
-        # 👉 AQUÍ SÍ podemos pasar avatar y widgets por config
+        # Avatar y configuración del widget SOLO en config
         if avatar_id:
             config["configurable"]["avatar_id"] = avatar_id
         if widget_mode:
@@ -181,7 +180,7 @@ async def simple_message(
         if widget_notes:
             config["configurable"]["widget_notes"] = widget_notes
 
-        # Estado inicial para el grafo (⚠️ SOLO claves que existen en State)
+        # ---------- ESTADO INICIAL (DEBE RESPETAR State) ----------
         initial_state: State = {
             "messages": [HumanMessage(content=mensaje)],
             "tz": timezone,
@@ -198,7 +197,7 @@ async def simple_message(
         if trusted_user:
             initial_state["user_identified"] = True
 
-        # 👉 Nota: ya NO metemos widget_avatar_id / widget_* en initial_state
+        # ⚠️ IMPORTANTE: NO meter widget_avatar_id ni widget_* en initial_state
 
         # Ejecutar grafo
         result: State = await compiled_graph.ainvoke(initial_state, config)
@@ -214,14 +213,12 @@ async def simple_message(
         if not agent_response:
             agent_response = "No pude procesar tu mensaje."
 
-        # Debug
+        # Debug tools
         tool_events = []
         for msg in messages:
             tc = getattr(msg, "tool_calls", None)
             if tc:
-                tool_events.append(
-                    {"from": getattr(msg, "type", None), "tool_calls": tc}
-                )
+                tool_events.append({"from": getattr(msg, "type", None), "tool_calls": tc})
 
         return {
             "response": agent_response,
@@ -231,6 +228,9 @@ async def simple_message(
         }
 
     except Exception as e:
+        # opcional: print stacktrace para depurar
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error processing message: {str(e)}")
 
 
@@ -248,7 +248,8 @@ async def chat_endpoint(payload: ChatRequest):
         chat_type = (meta.get("chat_type") or "default").lower()
         project_id = meta.get("project_id")
 
-        config = {
+        # ---------- CONFIG ----------
+        config: Dict[str, Any] = {
             "configurable": {
                 "thread_id": real_session_id,
                 "session_id": real_session_id,
@@ -261,7 +262,6 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.user_email:
             config["configurable"]["user_email"] = payload.user_email
 
-        # 👉 Avatar y widgets SOLO en config
         if payload.avatar_id:
             config["configurable"]["avatar_id"] = payload.avatar_id
         if payload.widget_mode:
@@ -271,7 +271,7 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.widget_notes:
             config["configurable"]["widget_notes"] = payload.widget_notes
 
-        # Estado inicial para el grafo (otra vez, solo keys válidas)
+        # ---------- ESTADO INICIAL ----------
         initial_state: State = {
             "messages": [HumanMessage(content=payload.message)],
             "tz": timezone,
@@ -284,7 +284,7 @@ async def chat_endpoint(payload: ChatRequest):
         if payload.user_email:
             initial_state["user_email"] = payload.user_email
 
-        # 👉 NO meter avatar/widget_* aquí para no romper el State
+        # De nuevo: nada de widget_avatar_id ni widget_* aquí
 
         result: State = await compiled_graph.ainvoke(initial_state, config)
 
@@ -302,9 +302,7 @@ async def chat_endpoint(payload: ChatRequest):
         for msg in messages:
             tc = getattr(msg, "tool_calls", None)
             if tc:
-                tool_events.append(
-                    {"from": getattr(msg, "type", None), "tool_calls": tc}
-                )
+                tool_events.append({"from": getattr(msg, "type", None), "tool_calls": tc})
 
         return {
             "response": agent_response,
@@ -315,10 +313,10 @@ async def chat_endpoint(payload: ChatRequest):
         }
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing the chat message: {str(e)}",
-        )
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error processing the chat message: {str(e)}")
+
 
 # ==========================================================
 # ENDPOINT UPLOAD
@@ -349,6 +347,8 @@ async def upload_file(file: UploadFile = File(...)):
         )
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error uploading the file: {str(e)}")
 
 
