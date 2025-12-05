@@ -545,35 +545,35 @@ def initial_node(state: State, config: RunnableConfig) -> State:
     # Valor por defecto para que los prompts del router/agentes no fallen
     if "profile_summary" not in state or state["profile_summary"] is None:
         state["profile_summary"] = "Perfil aún no registrado."
-    # Normalizar campos de práctica que llegan vacíos
+
+    # =============================
+    # Normalizar campos de práctica
+    # =============================
     if not state.get("project_id") or state["project_id"] in ["", " ", "null", "undefined"]:
         state["project_id"] = None
-    
+
     if not state.get("current_task_id") or state["current_task_id"] in ["", " ", "null", "undefined"]:
         state["current_task_id"] = None
-    
+
     if not state.get("current_step_number"):
         state["current_step_number"] = 0
 
-state.setdefault("practice_completed", False)
-
-
-    # Defaults para prácticas
+    # Defaults seguros
     state.setdefault("chat_type", "general")
-    state.setdefault("project_id", None)
-    state.setdefault("current_task_id", None)
-    state.setdefault("current_step_number", None)
     state.setdefault("practice_completed", False)
 
-
+    # =============================
     # Conectar session_id con thread_id si viene desde config
+    # =============================
     if not state.get("session_id"):
         configurable = config.get("configurable", {})
         thread_id = configurable.get("thread_id")
         if thread_id:
             state["session_id"] = thread_id
 
-    # Si el usuario ya está identificado, cargar su perfil completo
+    # =============================
+    # Si el usuario ya está identificado, cargar perfil completo
+    # =============================
     student = None
     if state.get("user_identified") and state.get("user_email"):
         user_info = state.get("user_email")
@@ -584,7 +584,9 @@ state.setdefault("practice_completed", False)
         except Exception as e:
             print(f"[initial_node] Error al traer student para avatar: {e}")
 
-    # Overrides que pueden venir del propio State o de config.configurable
+    # =============================
+    # Overrides del widget
+    # =============================
     configurable = config.get("configurable", {})
     override_avatar_id = (
         state.get("widget_avatar_id")
@@ -600,7 +602,9 @@ state.setdefault("practice_completed", False)
         or configurable.get("widget_notes")
     )
 
-    # Construir y fijar avatar_style que usarán los prompts
+    # =============================
+    # Construir avatar_style
+    # =============================
     state["avatar_style"] = build_avatar_style(
         student=student,
         override_avatar_id=override_avatar_id,
@@ -610,6 +614,7 @@ state.setdefault("practice_completed", False)
     )
 
     return state
+
 
 
 # =========================
