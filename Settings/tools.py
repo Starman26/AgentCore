@@ -6,6 +6,7 @@ from typing import Dict,List, Optional, Literal, Union
 from uuid import UUID, uuid4, uuid5, NAMESPACE_DNS, NAMESPACE_URL
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
+import json
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
@@ -131,7 +132,12 @@ def _semantic_search(vs, query: str, k: int = 3):
         },
     )
     return retriever.invoke(query)
-    
+
+MAX_CHARS = 900 
+def _clip(text: str, max_chars: int = MAX_CHARS) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
+ 
 def _normalize_session_id(session_id: Union[int, str, UUID]) -> str:
     """
     Normaliza cualquier session_id recibido a un UUID string válido.
@@ -382,14 +388,11 @@ def _summarize(snippets: List[dict], limit: int = 5) -> str:
 
 
 def _build_robot_support_docs() -> List[Document]:
-    """
-    Construye Document(s) a partir de la tabla RoboSupportDB para vectorizarla
-    (RAG de problemas de robots) con un estilo narrativo/humano.
-    """
     res = (
         SB.table("RoboSupportDB")
         .select(
-            "created_at, robot_type, problem_title, problem_description, solution_steps, author"
+            "id, created_at, category, robot_type, problem_title, "
+            "problem_description, solution_steps, author"
         )
         .execute()
     )
@@ -397,27 +400,346 @@ def _build_robot_support_docs() -> List[Document]:
     docs: List[Document] = []
 
     for r in rows:
-        robot = r.get("robot_type") or "el robot"
-        title = r.get("problem_title") or "problema sin título"
+        case_id = r.get("id")
+        robot = r.get("robot_type") or r.get("category") or "robot"
+        title = r.get("problem_title") or "Problema sin título"
         desc = r.get("problem_description") or "Sin descripción detallada."
         steps = r.get("solution_steps") or "Sin pasos registrados."
         author = r.get("author") or "otro integrante del laboratorio"
 
         content = (
-            f"Problema registrado para el robot {robot}: {title}.\n"
-            f"Descripción del problema: {desc}\n\n"
-            f"Según {author}, los pasos recomendados para resolverlo fueron:\n"
-            f"{steps}"
+            f"[ROBOT_SUPPORT_CASE]\n"
+            f"ID_CASO: {case_id}\n"
+            f"ROBOT: {robot}\n"
+            f"TÍTULO: {title}\n"
+            f"DESCRIPCIÓN_DEL_PROBLEMA: {desc}\n"
+            f"PASOS_DE_SOLUCIÓN_OFICIALES: {steps}\n"
+            f"AUTOR: {author}\n"
         )
+
         metadata = {
-            "created_at": r.get("created_at"),
+            "case_id": case_id,
             "robot_type": robot,
             "problem_title": title,
             "author": author,
         }
         docs.append(Document(page_content=content, metadata=metadata))
+
     return docs
 
+def _get_agent_tables(
+    project_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    table_names: Optional[List[str]] = None,
+) -> List[dict]:
+    """
+    Lee la tabla agent_tables y devuelve las tablas a las que el agente
+    puede acceder.
+
+    🔹 Regla:
+    - Si hay team_id -> se filtra por team_id (clave principal).
+    - Si NO hay team_id pero sí project_id -> se filtra por project_id.
+    - Si no se encontró nada en el primer intento, hace un fallback con el otro.
+    """
+    try:
+        base = SB.table("agent_tables").select(
+            "id, project_id, team_id, table_name, display_name, description, created_at"
+        )
+
+        # ---- 1er intento: priorizar team_id ----
+        q = base
+        if team_id:
+            q = q.eq("team_id", team_id)
+        elif project_id:
+            q = q.eq("project_id", project_id)
+
+        if table_names:
+            q = q.in_("table_name", table_names)
+
+        res = q.order("created_at", desc=False).execute()
+        data = res.data or []
+
+        # ---- Fallback: si no encontró nada y tengo el otro ID ----
+        if not data and project_id and not team_id:
+            # Reintenta usando sólo project_id
+            q2 = base.eq("project_id", project_id)
+            if table_names:
+                q2 = q2.in_("table_name", table_names)
+            res2 = q2.order("created_at", desc=False).execute()
+            data = res2.data or []
+
+        elif not data and team_id and project_id:
+            # Si primero filtró por team_id y falló, prueba con project_id
+            q2 = base.eq("project_id", project_id)
+            if table_names:
+                q2 = q2.in_("table_name", table_names)
+            res2 = q2.order("created_at", desc=False).execute()
+            data = res2.data or []
+
+        return data
+
+    except Exception as e:
+        print("[_get_agent_tables] error:", e)
+        return []
+
+
+@tool
+def gather_rag_context(
+    query: str,
+    user_email: Optional[str] = None,
+    project_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    robot_type: Optional[str] = None,
+    image_limit: int = 5,
+    web_depth: str = "advanced",
+) -> str:
+    """
+    Orquesta el RAG general del sistema.
+
+    Flujo SIEMPRE:
+    1) Buscar en BD (RAG sobre agent_tables) → DB_CONTEXT::
+    2) Si hay algo en BD, buscar imágenes relacionadas → IMAGE_CONTEXT::
+    3) En todos los casos, complementar con web_research → WEB_CONTEXT::
+
+    El agente debe usar primero DB_CONTEXT, luego IMAGE_CONTEXT como apoyo
+    visual y WEB_CONTEXT solo como complemento / actualización.
+    """
+
+    # -------- 1) RAG en base de datos (tablas registradas en agent_tables) --------
+    db_context = _search_in_db_impl(
+        project_id=project_id,
+        team_id=team_id,
+        query=query,
+        max_tables=3,
+        k_per_table=4,
+        only_tables=None,
+    )
+
+    has_db_results = not str(db_context).startswith("DB_CONTEXT::RAG_EMPTY")
+
+    # -------- 2) Imágenes relacionadas (solo si hubo algo en BD) --------
+    image_context = "IMAGE_CONTEXT::RAG_EMPTY"
+    if has_db_results:
+        try:
+            imgs = search_manual_images.invoke(
+                {
+                    "query": query,
+                    "project_id": project_id,
+                    "robot_type": robot_type,
+                    "limit": image_limit,
+                }
+            )
+        except Exception as e:
+            print("[gather_rag_context] error search_manual_images:", e)
+            imgs = []
+
+        if imgs:
+            parts = []
+            for im in imgs:
+                url = im.get("image_url") or im.get("storage_path") or ""
+                title = im.get("title") or ""
+                desc = im.get("description") or ""
+                tags = im.get("tags") or ""
+                parts.append(
+                    f"- TITLE={title} | DESC={desc} | TAGS={tags} | URL={url}"
+                )
+            image_context = "IMAGE_CONTEXT::\n" + "\n".join(parts)
+
+    # -------- 3) Web search SIEMPRE (aunque BD esté vacía) --------
+    try:
+        web_ctx = web_research.invoke(
+            {
+                "query": query,
+                "depth": web_depth,
+                "max_results": 5,
+                "time_filter": None,
+            }
+        )
+        web_context = str(web_ctx)  # ya trae "WEB_CONTEXT::..."
+    except Exception as e:
+        print("[gather_rag_context] error web_research:", e)
+        web_context = f"WEB_CONTEXT::ERROR::{type(e).__name__}::{e}"
+
+    # -------- 4) Empaquetar todo --------
+    return (
+        f"{db_context}\n\n"
+        f"{image_context}\n\n"
+        f"{web_context}"
+    )
+
+@tool
+def list_agent_tables(
+    project_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+) -> List[dict]:
+    """
+    Devuelve las tablas registradas en agent_tables a las que el agente
+    tiene acceso para un proyecto/equipo dado.
+
+    Úsalo cuando quieras saber qué tablas puedes consultar antes
+    de llamar a search_in_db.
+    """
+    tables = _get_agent_tables(project_id=project_id, team_id=team_id)
+    out: List[dict] = []
+
+    for t in tables:
+        out.append(
+            {
+                "table_name": t.get("table_name"),
+                "display_name": t.get("display_name"),
+                "description": t.get("description"),
+                "project_id": t.get("project_id"),
+                "team_id": t.get("team_id"),
+            }
+        )
+
+    return out
+@tool
+def describe_agent_table(
+    table_name: str,
+    sample_rows: int = 3,
+) -> dict:
+    """
+    Devuelve un pequeño resumen del esquema de una tabla real
+    (no agent_tables), con nombres de columnas y algunas filas de ejemplo.
+
+    Úsalo DESPUÉS de list_agent_tables para entender qué campos hay
+    en cada tabla antes de construir la query de search_in_db.
+    """
+    try:
+        sample_rows = max(1, min(10, int(sample_rows)))
+        res = SB.table(table_name).select("*").limit(sample_rows).execute()
+        rows = res.data or []
+
+        if not rows:
+            return {
+                "table_name": table_name,
+                "columns": [],
+                "sample_rows": [],
+                "note": "La tabla existe pero no tiene filas (o no se pudieron leer).",
+            }
+
+        # Tomamos las columnas de la primera fila
+        columns = list(rows[0].keys())
+
+        return {
+            "table_name": table_name,
+            "columns": columns,
+            "sample_rows": rows,
+        }
+
+    except Exception as e:
+        return {
+            "table_name": table_name,
+            "error": str(e),
+        }
+
+def _select_relevant_agent_tables(
+    tables: List[dict],
+    query: str,
+    max_tables: int = 3,
+) -> List[dict]:
+    """
+    Usa el LLM para elegir hasta max_tables tablas relevantes
+    en función de la descripción de agent_tables y la pregunta.
+    """
+    if not tables:
+        return []
+
+    if len(tables) <= max_tables:
+        return tables
+
+    listado = []
+    for t in tables:
+        listado.append(
+            f"- table_name: {t.get('table_name')} | display_name: {t.get('display_name')} | "
+            f"descripcion: {t.get('description')}"
+        )
+    listado_txt = "\n".join(listado)
+
+    prompt = f"""
+Eres un asistente que selecciona tablas de base de datos para un sistema RAG.
+
+Pregunta del usuario:
+\"\"\"{query}\"\"\"
+
+Tablas disponibles (table_name, display_name, descripcion):
+{listado_txt}
+
+Elige HASTA {max_tables} tablas que realmente aporten contexto para responder la pregunta.
+Devuelve SOLO un JSON con este formato exacto:
+
+{{"tables": ["table_name_1", "table_name_2"]}}
+"""
+
+    try:
+        resp = _QT_LLM.invoke(prompt)
+        text = (resp.content or "").strip()
+        data = json.loads(text)
+        names = set(data.get("tables", []))
+    except Exception as e:
+        print("[_select_relevant_agent_tables] error parse JSON:", e)
+        text = (resp.content or "") if "resp" in locals() else ""
+        names = {t["table_name"] for t in tables if t["table_name"] in text}
+
+    selected = [t for t in tables if t.get("table_name") in names]
+    if not selected:
+        selected = tables[:max_tables]
+
+    return selected
+
+
+def _build_generic_table_docs(agent_table_row: dict) -> List[Document]:
+    """
+    Construye Documents genéricos a partir de una tabla arbitraria registrada en agent_tables.
+    No asume un schema fijo: concatena pares campo:valor en texto legible.
+    """
+    table_name = agent_table_row.get("table_name")
+    display_name = agent_table_row.get("display_name") or table_name
+    description = agent_table_row.get("description") or "Sin descripción"
+
+    if not table_name:
+        return []
+
+    try:
+        # Ajusta el límite si alguna tabla puede ser muy grande
+        res = SB.table(table_name).select("*").limit(1000).execute()
+    except Exception as e:
+        print(f"[_build_generic_table_docs] error leyendo {table_name}:", e)
+        return []
+
+    rows = res.data or []
+    docs: List[Document] = []
+
+    for r in rows:
+        # Construir texto de campos clave:valor
+        fields = []
+        for k, v in r.items():
+            if v is None or v == "":
+                continue
+            text_val = str(v)
+            if len(text_val) > 200:
+                text_val = text_val[:197] + "..."
+            fields.append(f"{k}: {text_val}")
+
+        if not fields:
+            continue
+
+        row_text = "; ".join(fields)
+        content = (
+            f"Tabla: {display_name} ({table_name}).\n"
+            f"Descripción de la tabla: {description}.\n"
+            f"Registro:\n{row_text}"
+        )
+        metadata = {
+            "table_name": table_name,
+            "display_name": display_name,
+            "agent_table_id": agent_table_row.get("id"),
+            "row_id": r.get("id"),
+        }
+        docs.append(Document(page_content=content, metadata=metadata))
+
+    return docs
 
 # ====================================================
 # TOOLS
@@ -658,11 +980,20 @@ def retrieve_context(name_or_email: str, chat_id: int, query: str) -> str:
     print(f"RAG transformed_query = {transformed_query}")
 
     # 2) Vectorstores (perfil + historial) y búsqueda semántica avanzada
-    student_vectorstore = general_student_db_use(name_or_email)
-    student_docs = _semantic_search(student_vectorstore, transformed_query, k=2)
+    try:
+        student_vectorstore = general_student_db_use(name_or_email)
+        student_docs = _semantic_search(student_vectorstore, transformed_query, k=4) if student_vectorstore else []
+    except Exception as e:
+        print("[retrieve_context] error student_vectorstore:", e)
+        student_docs = []
 
-    chat_vectorstore = general_chat_db_use(chat_id)
-    chat_docs = _semantic_search(chat_vectorstore, transformed_query, k=2)
+    try:
+        chat_vectorstore = general_chat_db_use(chat_id)
+        chat_docs = _semantic_search(chat_vectorstore, transformed_query, k=4) if chat_vectorstore else []
+    except Exception as e:
+        print("[retrieve_context] error chat_vectorstore:", e)
+        chat_docs = []
+
 
     out: List[str] = []
     search_name = name_or_email.lower()
@@ -689,20 +1020,19 @@ def retrieve_context(name_or_email: str, chat_id: int, query: str) -> str:
 
     # Contexto del estudiante (perfil)
     for d in student_docs:
-        m = d.metadata or {}
-        doc_name = (m.get("full_name") or "").lower()
-        doc_email = (m.get("email") or "").lower()
+            m = d.metadata or {}
+            doc_name = (m.get("full_name") or "").lower()
+            doc_email = (m.get("email") or "").lower()
 
-        if search_name in doc_name or search_name in doc_email or (
-            doc_email and doc_email in search_name
-        ):
-            out.append(
-                f"[STUDENT_DOC] {m.get('full_name')} | {m.get('email')}\n"
-                f"{d.page_content}\n"
-            )
-        else:
-            print(f"Documento pertenece a {doc_name}, buscando {search_name}")
-
+            if search_name in doc_name or search_name in doc_email or (
+                doc_email and doc_email in search_name
+            ):
+                out.append(
+                    f"[STUDENT_DOC] {m.get('full_name')} | {m.get('email')}\n"
+                    f"{_clip(d.page_content)}\n"
+                )
+            else:
+                print(f"Documento pertenece a {doc_name}, buscando {search_name}")
     # Contexto desde vectorstore de chat
     for d in chat_docs:
         m = d.metadata or {}
@@ -710,7 +1040,7 @@ def retrieve_context(name_or_email: str, chat_id: int, query: str) -> str:
             f"{m.get('created_at')} | {m.get('robot_type')} | "
             f"{m.get('problem_title')} | {m.get('author')}\n"
             f"[CHAT] {m.get('session_id')} | {m.get('updated_at')}\n"
-            f"{d.page_content}\n"
+            f"{_clip(d.page_content)}\n"
         )
 
     result = "\n".join(out) if out else "RAG_EMPTY"
@@ -721,36 +1051,155 @@ def retrieve_context(name_or_email: str, chat_id: int, query: str) -> str:
 
 # ---- Tool RAG específico de RoboSupport ----
 @tool
-def retrieve_robot_support(query: str) -> str:
+def retrieve_robot_support(
+    query: str,
+    project_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+) -> str:
     """
-    Busca problemas y soluciones en la base de datos de RoboSupportDB usando RAG.
-    Devuelve contexto técnico en lenguaje natural para que el agente genere una respuesta humana.
+    Wrapper legado que usa la lógica genérica de search_in_db,
+    restringida a la tabla 'RoboSupportDB'.
+
+    Debe existir un registro en agent_tables con table_name='RoboSupportDB'.
     """
-    docs = _build_robot_support_docs()
-    if not docs:
-        return "RAG_EMPTY::No hay registros en RoboSupportDB."
+    return _search_in_db_impl(
+        project_id=project_id,
+        query=query,
+        team_id=team_id,
+        max_tables=1,
+        k_per_table=4,
+        only_tables=["RoboSupportDB"],
+    )
 
-    vs = create_or_update_vectorstore("robot_support", docs, len(docs))
-    hits = _semantic_search(vs, query, k=3)
-
-
-    if not hits:
-        return (
-            f"RAG_EMPTY::No encontré casos en RoboSupportDB relacionados con: {query}"
+def _search_in_db_impl(
+    project_id: Optional[str],
+    query: str,
+    team_id: Optional[str] = None,
+    max_tables: int = 3,
+    k_per_table: int = 4,
+    only_tables: Optional[List[str]] = None,
+    max_attempts: int = 3,
+) -> str:
+    """
+    Implementación interna de la búsqueda RAG genérica sobre las tablas
+    registradas en agent_tables, con reintentos progresivamente más relajados.
+    """
+    try:
+        # 0) Transformar query una vez
+        transformed_query = _transform_query_for_rag(query)
+        print(
+            f"[search_in_db] original_query='{query}' | "
+            f"transformed_query='{transformed_query}'"
         )
 
-    out_parts: List[str] = []
-    for i, d in enumerate(hits, 1):
-        m = d.metadata or {}
-        robot = m.get("robot_type") or "robot"
-        title = m.get("problem_title") or "problema sin título"
-        author = m.get("author") or "otro integrante del laboratorio"
-        out_parts.append(
-            f"CASO_{i}:: Robot: {robot} | Problema: {title} | Registrado por: {author}\n"
-            f"{d.page_content}\n"
-        )
+        attempt = 1
+        last_error = None
 
-    return "\n\n".join(out_parts)
+        while attempt <= max_attempts:
+            print(f"[search_in_db] intento {attempt}/{max_attempts}")
+
+            # --- 1) Elegir configuración según intento ---
+            if attempt == 1:
+                cur_project_id = project_id
+                cur_team_id = team_id
+                cur_only_tables = only_tables
+            elif attempt == 2:
+                # Relajar team_id
+                cur_project_id = project_id
+                cur_team_id = None
+                cur_only_tables = only_tables
+            else:
+                # Último intento: sin filtros de proyecto/tabla
+                cur_project_id = None
+                cur_team_id = None
+                cur_only_tables = None
+
+            # --- 2) Obtener tablas candidatas ---
+            tables = _get_agent_tables(
+                project_id=cur_project_id,
+                team_id=cur_team_id,
+                table_names=cur_only_tables,
+            )
+            if not tables:
+                last_error = (
+                    "No hay tablas configuradas en agent_tables para este filtro."
+                )
+                print(f"[search_in_db] intento {attempt}: sin tablas.")
+                attempt += 1
+                continue
+
+            # --- 3) Seleccionar tablas relevantes ---
+            selected = _select_relevant_agent_tables(
+                tables=tables,
+                query=transformed_query,
+                max_tables=max_tables,
+            )
+
+            all_snippets: List[str] = []
+
+            # --- 4) Construir vectorstore por tabla y buscar ---
+            for t in selected:
+                docs = _build_generic_table_docs(t)
+                if not docs:
+                    continue
+
+                vs_name = f"agent_{t.get('table_name')}"
+                vs = create_or_update_vectorstore(vs_name, docs, len(docs))
+
+                hits = _semantic_search(vs, transformed_query, k=k_per_table)
+                for d in hits:
+                    m = d.metadata or {}
+                    header = (
+                        f"[TABLE={m.get('table_name')}] {m.get('display_name')} | "
+                        f"row_id={m.get('row_id')}"
+                    )
+                    all_snippets.append(f"{header}\n{d.page_content}\n")
+
+            # Si hubo resultados, regresamos de inmediato
+            if all_snippets:
+                body = "\n---\n".join(all_snippets)
+                return f"DB_CONTEXT::\n{body}"
+
+            print(f"[search_in_db] intento {attempt}: sin resultados relevantes.")
+            attempt += 1
+
+        # Si llegamos aquí, los intentos se agotaron
+        msg = last_error or "No encontré registros relevantes tras varios intentos."
+        return f"DB_CONTEXT::RAG_EMPTY::{msg} Consulta: {query}"
+
+    except Exception as e:
+        print("[_search_in_db_impl] error:", e)
+        return f"DB_CONTEXT::ERROR::{e}"
+
+
+@tool
+def search_in_db(
+    project_id: Optional[str],
+    query: str,
+    team_id: Optional[str] = None,
+    max_tables: int = 3,
+    k_per_table: int = 4,
+    only_tables: Optional[List[str]] = None,
+) -> str:
+    """
+    Tool RAG genérica para buscar en las tablas configuradas en agent_tables.
+
+    - Usa agent_tables para saber QUÉ tablas puede usar el agente.
+    - Usa LLM para seleccionar las tablas más relevantes para la query.
+    - Vectoriza filas de esas tablas y hace búsqueda semántica (MMR).
+    - Devuelve contexto legible para que el agente responda.
+
+    Convención:
+    - El contexto devuelto empieza con 'DB_CONTEXT::'.
+    """
+    return _search_in_db_impl(
+        project_id=project_id,
+        query=query,
+        team_id=team_id,
+        max_tables=max_tables,
+        k_per_table=k_per_table,
+        only_tables=only_tables,
+    )
 
 
 # ---- Tool de ruteo interno entre agentes ----
@@ -1069,43 +1518,4 @@ def search_manual_images(
         print("[search_manual_images] error:", e)
         return []
 
-# ====================================================
-# TOOL SETS
-# ====================================================
-LAB_TOOLS = [
-    retrieve_context,
-    retrieve_robot_support,
-    web_research,
-    search_manual_images,      
-    route_to,
-]
 
-GENERAL_TOOLS = [
-    get_student_profile,
-    update_student_goals,
-    update_learning_style,
-    web_research,
-    retrieve_context,
-    search_manual_images,      
-    route_to,
-    summarize_all_chats,
-]
-
-EDU_TOOLS = [
-    get_student_profile,
-    update_learning_style,
-    web_research,
-    retrieve_context,
-    get_project_tasks,         
-    get_task_steps,          
-    get_task_step_images,     
-    search_manual_images,     
-    complete_task_step,       
-    route_to,
-]
-
-IDENTIFICATION_TOOLS = [
-    check_user_exists,
-    register_new_student,
-    update_student_info,
-]
